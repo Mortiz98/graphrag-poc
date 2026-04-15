@@ -1,0 +1,13 @@
+Python is a high-level programming language created by Guido van Rossum and first released in 1991. Python's design philosophy emphasizes code readability with its notable use of significant whitespace. Its language constructs and object-oriented approach aim to help programmers write clear, logical code for small and large-scale projects.
+
+Python has a large standard library, commonly cited as one of its greatest strengths. The Python Software Foundation manages and directs Python's development. Python is widely used in web development, data science, artificial intelligence, and scientific computing.
+
+Django is a high-level Python web framework that encourages rapid development and clean, pragmatic design. It was originally developed by Adrian Holovaty and Simon Willison in 2005. Django follows the model-template-view architectural pattern and is maintained by the Django Software Foundation.
+
+FastAPI is a modern, fast web framework for building APIs with Python based on standard Python type hints. It was developed by Sebastian Ramirez and first released in 2018. FastAPI is built on top of Starlette for the web layer and Pydantic for data validation. FastAPI is used by companies like Microsoft, Uber, and Netflix.
+
+LangChain is a framework for developing applications powered by large language models. It was created by Harrison Chase in 2022. LangChain provides abstractions for chains, agents, and retrieval systems. LangChain integrates with multiple LLM providers including OpenAI, Anthropic, and Cohere.
+
+Qdrant is an open-source vector search engine written in Rust. It is developed by Qdrant, Inc. and was first released in 2021. Qdrant supports similarity search with various distance metrics including cosine, dot product, and Euclidean distance. Qdrant is used for semantic search, recommendation systems, and RAG applications.
+
+NebulaGraph is a distributed graph database built for large-scale graph data. It is developed by Vesoft, Inc. NebulaGraph uses a shared-nothing architecture and supports the nGQL query language. NebulaGraph is used in social networks, fraud detection, and knowledge graph applications.

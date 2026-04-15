@@ -154,7 +154,21 @@ def _fuse_context(
     return context, fused
 
 
-def generate_answer(question: str, context: str) -> tuple[str, float]:
+def _compute_confidence(vector_triplets: list[dict], fused_count: int) -> float:
+    if not vector_triplets:
+        return 0.0
+
+    avg_similarity = sum(t.get("score", 0.0) for t in vector_triplets) / len(vector_triplets)
+    coverage_factor = min(fused_count / 3.0, 1.0)
+    confidence = avg_similarity * 0.7 + coverage_factor * 0.3
+
+    return round(min(max(confidence, 0.0), 1.0), 2)
+
+
+def generate_answer(question: str, context: str) -> str:
+    if not context.strip():
+        return "I could not find relevant information to answer your question."
+
     llm = get_llm(temperature=0.1)
     prompt = QA_USER_PROMPT.format(context=context, question=question)
 
@@ -166,11 +180,8 @@ def generate_answer(question: str, context: str) -> tuple[str, float]:
     )
 
     answer = response.content.strip()
-    context_lines = context.split("\n")
-    confidence = min(len(context_lines) / 5.0, 1.0)
-
-    logger.info("answer_generated", question=question[:50], confidence=confidence)
-    return answer, confidence
+    logger.info("answer_generated", question=question[:50])
+    return answer
 
 
 def query(question: str, top_k: int = 5) -> QueryResponse:
@@ -192,7 +203,8 @@ def query(question: str, top_k: int = 5) -> QueryResponse:
         | {t["object"] for t in all_triplets if t.get("object")}
     )
 
-    answer, confidence = generate_answer(question, context)
+    confidence = _compute_confidence(vector_triplets, len(all_triplets))
+    answer = generate_answer(question, context)
 
     sources_by_chunk: dict[str, SourceInfo] = {}
     for t in vector_triplets:
@@ -207,10 +219,10 @@ def query(question: str, top_k: int = 5) -> QueryResponse:
             SourceTriplet(subject=t["subject"], predicate=t["predicate"], object=t["object"])
         )
 
-    logger.info("query_completed", answer_len=len(answer), sources=len(sources_by_chunk))
+    logger.info("query_completed", answer_len=len(answer), sources=len(sources_by_chunk), confidence=confidence)
     return QueryResponse(
         answer=answer,
         sources=list(sources_by_chunk.values()),
         entities_found=entities_found,
-        confidence=round(confidence, 2),
+        confidence=confidence,
     )

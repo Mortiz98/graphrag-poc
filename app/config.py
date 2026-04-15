@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_llm_model: str = "openai/gpt-4o"
+    openrouter_llm_model: str = "openai/gpt-4o-mini"
     openrouter_embedding_model: str = "openai/text-embedding-3-small"
 
     qdrant_host: str = "localhost"

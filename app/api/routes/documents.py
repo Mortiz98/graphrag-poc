@@ -2,7 +2,11 @@ from fastapi import APIRouter, HTTPException
 
 from app.config import get_settings
 from app.core.graph import get_nebula_session
-from app.core.vectorstore import get_qdrant_client
+from app.core.vectorstore import (
+    get_qdrant_client,
+    get_unique_source_docs,
+    scroll_by_source_doc,
+)
 from app.models.graph_schema import SPACE_NAME
 from app.models.schemas import DocumentInfo, GraphStats
 
@@ -28,40 +32,17 @@ async def list_documents():
     if settings.qdrant_collection_name not in collection_names:
         return []
 
-    all_points = []
-    offset = None
-    while True:
-        results = client.scroll(
-            collection_name=settings.qdrant_collection_name,
-            limit=100,
-            offset=offset,
-            with_payload=True,
-            with_vectors=False,
-        )
-        all_points.extend(results[0])
-        if not results[1]:
-            break
-        offset = results[1]
+    docs_by_name = get_unique_source_docs(client, settings.qdrant_collection_name)
 
-    docs_by_name: dict[str, DocumentInfo] = {}
-    for point in all_points:
-        source = point.payload.get("source_doc", "")
-        if not source:
-            continue
-        if source not in docs_by_name:
-            docs_by_name[source] = DocumentInfo(
-                id=point.id if isinstance(point.id, str) else str(point.id),
-                filename=source,
-                chunks_count=0,
-                triplets_count=0,
-            )
-        docs_by_name[source].triplets_count += 1
-        docs_by_name[source].chunks_count = max(
-            docs_by_name[source].chunks_count,
-            1,
+    return [
+        DocumentInfo(
+            id=info["id"],
+            filename=info["filename"],
+            chunks_count=len(info["chunk_ids"]),
+            triplets_count=info["triplets_count"],
         )
-
-    return list(docs_by_name.values())
+        for info in docs_by_name.values()
+    ]
 
 
 @router.delete(
@@ -82,39 +63,24 @@ async def delete_document(filename: str):
     if settings.qdrant_collection_name not in collection_names:
         raise HTTPException(status_code=404, detail=f"Document '{filename}' not found")
 
-    all_points = []
-    offset = None
-    while True:
-        results = client.scroll(
-            collection_name=settings.qdrant_collection_name,
-            limit=100,
-            offset=offset,
-            with_payload=True,
-            with_vectors=False,
-        )
-        all_points.extend(results[0])
-        if not results[1]:
-            break
-        offset = results[1]
-
-    points_to_delete = [point.id for point in all_points if point.payload.get("source_doc") == filename]
+    points_to_delete = scroll_by_source_doc(client, settings.qdrant_collection_name, filename)
 
     if not points_to_delete:
         raise HTTPException(status_code=404, detail=f"Document '{filename}' not found")
 
     entity_ids = set()
-    for point in all_points:
-        if point.payload.get("source_doc") == filename:
-            sid = point.payload.get("subject_id", "")
-            oid = point.payload.get("object_id", "")
-            if sid:
-                entity_ids.add(sid)
-            if oid:
-                entity_ids.add(oid)
+    for point in points_to_delete:
+        sid = point.payload.get("subject_id", "")
+        oid = point.payload.get("object_id", "")
+        if sid:
+            entity_ids.add(sid)
+        if oid:
+            entity_ids.add(oid)
 
+    point_ids = [point.id for point in points_to_delete]
     client.delete(
         collection_name=settings.qdrant_collection_name,
-        points_selector=points_to_delete,
+        points_selector=point_ids,
     )
 
     try:
@@ -130,7 +96,7 @@ async def delete_document(filename: str):
 
     return {
         "filename": filename,
-        "vectors_deleted": len(points_to_delete),
+        "vectors_deleted": len(point_ids),
         "entities_deleted_from_graph": len(entity_ids),
         "status": "deleted",
     }

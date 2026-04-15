@@ -1,5 +1,12 @@
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PayloadSchemaType,
+    VectorParams,
+)
 
 from app.config import get_settings
 from app.core import logger
@@ -27,6 +34,84 @@ def ensure_collection_exists(client: QdrantClient, collection_name: str, vector_
             ),
         )
         logger.info("collection_created", collection=collection_name)
+    _ensure_payload_indexes(client, collection_name)
+
+
+def _ensure_payload_indexes(client: QdrantClient, collection_name: str) -> None:
+    index_fields = ["source_doc", "chunk_id", "subject_id", "object_id"]
+    for field in index_fields:
+        try:
+            client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass
+
+
+def scroll_by_source_doc(
+    client: QdrantClient,
+    collection_name: str,
+    source_doc: str,
+    batch_size: int = 100,
+) -> list:
+    all_points = []
+    offset = None
+    while True:
+        results = client.scroll(
+            collection_name=collection_name,
+            limit=batch_size,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+            scroll_filter=Filter(must=[FieldCondition(key="source_doc", match=MatchValue(value=source_doc))]),
+        )
+        all_points.extend(results[0])
+        if not results[1]:
+            break
+        offset = results[1]
+    return all_points
+
+
+def get_unique_source_docs(
+    client: QdrantClient,
+    collection_name: str,
+    batch_size: int = 100,
+) -> dict[str, dict]:
+    all_points = []
+    offset = None
+    while True:
+        results = client.scroll(
+            collection_name=collection_name,
+            limit=batch_size,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        all_points.extend(results[0])
+        if not results[1]:
+            break
+        offset = results[1]
+
+    docs_by_name: dict[str, dict] = {}
+    for point in all_points:
+        source = point.payload.get("source_doc", "")
+        if not source:
+            continue
+        if source not in docs_by_name:
+            docs_by_name[source] = {
+                "id": point.id if isinstance(point.id, str) else str(point.id),
+                "filename": source,
+                "triplets_count": 0,
+                "chunk_ids": set(),
+            }
+        docs_by_name[source]["triplets_count"] += 1
+        chunk_id = point.payload.get("chunk_id", "")
+        if chunk_id:
+            docs_by_name[source]["chunk_ids"].add(chunk_id)
+
+    return docs_by_name
 
 
 async def check_qdrant_health() -> bool:

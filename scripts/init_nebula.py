@@ -1,9 +1,3 @@
-"""Initialize NebulaGraph schema for the GraphRAG PoC.
-
-This script creates the space and all required tags and edges
-in NebulaGraph. Run it after starting the Docker services.
-"""
-
 from app.config import get_settings
 from app.core import logger
 from app.core.graph import get_nebula_session
@@ -12,14 +6,10 @@ SCHEMA_STATEMENTS = [
     "CREATE SPACE IF NOT EXISTS graphrag (vid_type=FIXED_STRING(256), partition_num=1, replica_factor=1)",
 ]
 
-
 SCHEMA_STATEMENTS_AFTER_SPACE = [
     "USE graphrag",
     "CREATE TAG IF NOT EXISTS entity (name string, type string, description string)",
-    "CREATE TAG IF NOT EXISTS chunk (content string, source string, chunk_index int)",
     "CREATE EDGE IF NOT EXISTS related_to (relation string, weight double)",
-    "CREATE EDGE IF NOT EXISTS contains_chunk (position int)",
-    "CREATE EDGE IF NOT EXISTS same_as (confidence double)",
 ]
 
 STORAGE_HOST = "nebula-storaged"
