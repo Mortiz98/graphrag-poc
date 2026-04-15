@@ -1,30 +1,28 @@
 # GraphRAG PoC
 
-Knowledge graph + vector search hybrid RAG system. Processes documents (PDF, TXT, Markdown), extracts entity-relation triplets, stores them in a graph database and vector store, and answers questions using both semantic search and graph traversal.
+Knowledge graph + vector search hybrid RAG system with an interactive Streamlit UI. Upload documents, visualize the knowledge graph, and ask questions — all from the browser.
 
 ## Architecture
 
 ```
-                     FastAPI (REST API)
-                   /ingest  |  /query
-                          │
-              ┌───────────┼───────────┐
-              │           │           │
-         Ingestion    Query Pipeline  Health
-         Pipeline                    Checks
-              │           │
-              └─────┬─────┘
-                    │
-              LangChain + LLM
-              /           \
-         ┌────┘             └────┐
-    ┌─────┐                    ┌─────┐
-    │Qdrant│                    │Nebula│
-    │(vecs)│                    │Graph │
-    └─────┘                    └─────┘
-         │                        │
-         └──────── OpenRouter ────┘
-              (LLM + Embeddings)
+make run
+├── Docker (Qdrant + NebulaGraph)
+├── FastAPI :8000 (REST API + Swagger)
+└── Streamlit :8501 (Interactive UI)
+       │
+       ▼
+  ┌─────────┬──────────┬──────────┐
+  │ Upload  │  Graph    │  Query   │
+  │ Docs    │  Explorer │  & Chat  │
+  └────┬────┴────┬──────┴────┬─────┘
+       └─────────┼───────────┘
+                 ▼
+            FastAPI API
+                 │
+     ┌───────────┼───────────┐
+     ▼           ▼           ▼
+  Qdrant     NebulaGraph  OpenRouter
+  (vectors)  (graph)      (LLM+Emb)
 ```
 
 ## Quick Start
@@ -44,41 +42,59 @@ cp .env.example .env
 # Edit .env and add your OpenRouter API key
 ```
 
-### 2. Start services
-
-```bash
-docker compose up -d
-```
-
-Wait for all containers to be healthy (`docker compose ps`).
-
-### 3. Install dependencies
+### 2. Install dependencies
 
 ```bash
 uv sync
 ```
 
-### 4. Initialize NebulaGraph schema
+### 3. Start everything
 
 ```bash
-uv run python -c "from scripts.init_nebula import init_schema; init_schema()"
+make run
 ```
 
-### 5. Start the API
+This starts Docker, initializes NebulaGraph schema, launches the API server, and opens the Streamlit UI.
+
+- **Streamlit UI**: http://localhost:8501
+- **API docs (Swagger)**: http://localhost:8000/docs
+
+### 4. Load sample data
+
+Click **"Seed Sample Data"** on the Upload page, or run:
 
 ```bash
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+make seed
 ```
 
-Or use the script:
+## What You Can Do
 
-```bash
-uv run python -m app.main
-```
+### Upload Documents (Upload page)
 
-### 6. Open Swagger UI
+Drag-and-drop PDF, TXT, or Markdown files. The system will:
+1. Split documents into chunks
+2. Extract entity-relation triplets via LLM
+3. Store entities and relationships in NebulaGraph
+4. Embed triplets and store in Qdrant
 
-Navigate to [http://localhost:8000/docs](http://localhost:8000/docs)
+### Explore the Graph (Graph page)
+
+Interactive visualization of the knowledge graph:
+- Filter by entity type, relation type, or minimum connections
+- Click nodes to inspect entity details and connections
+- View 1-hop neighborhoods around any entity
+- Switch layouts (force-directed, hierarchical, circular)
+
+### Ask Questions (Query page)
+
+Chat interface with streaming support:
+- Toggle streaming to see answers generate token-by-token
+- Each answer includes confidence score, sources, and entities found
+- Chat history persists within the session
+
+### Manage Documents (Documents page)
+
+List, inspect, and delete ingested documents with one click.
 
 ## API Endpoints
 
@@ -86,10 +102,16 @@ Navigate to [http://localhost:8000/docs](http://localhost:8000/docs)
 |--------|----------|-------------|
 | `GET` | `/api/v1/health` | Health check for all services |
 | `POST` | `/api/v1/ingest` | Upload and process a document (PDF/TXT/MD) |
-| `POST` | `/api/v1/query` | Ask a question, get an answer with sources |
+| `POST` | `/api/v1/seed` | Ingest sample data |
+| `POST` | `/api/v1/query` | Ask a question (sync) |
+| `POST` | `/api/v1/query/stream` | Ask a question (streaming SSE) |
 | `GET` | `/api/v1/documents` | List ingested documents |
 | `DELETE` | `/api/v1/documents/{filename}` | Delete a document and its data |
 | `GET` | `/api/v1/graph/stats` | Knowledge graph statistics |
+| `GET` | `/api/v1/graph/entities` | List all entities with types and degrees |
+| `GET` | `/api/v1/graph/edges` | List all edges (relationships) |
+| `GET` | `/api/v1/graph/subgraph` | N-hop neighborhood of an entity |
+| `GET` | `/api/v1/graph/filters` | Available filter values |
 
 ### Examples
 
@@ -131,6 +153,7 @@ curl http://localhost:8000/api/v1/graph/stats
 3. **Graph traversal** — NebulaGraph expands context via bidirectional relationships
 4. **Fuse contexts** — Deduplicate and merge vector + graph results
 5. **Generate answer** — LLM produces answer using structured context
+6. **Confidence score** — 70% vector similarity + 30% coverage factor
 
 ## Configuration
 
@@ -140,7 +163,7 @@ All settings are in `.env` (see `.env.example`):
 |----------|---------|-------------|
 | `OPENROUTER_API_KEY` | — | Your OpenRouter API key |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
-| `OPENROUTER_LLM_MODEL` | `openai/gpt-4o` | LLM model for extraction and QA |
+| `OPENROUTER_LLM_MODEL` | `openai/gpt-4o-mini` | LLM model for extraction and QA |
 | `OPENROUTER_EMBEDDING_MODEL` | `openai/text-embedding-3-small` | Embedding model (1536d) |
 | `QDRANT_HOST` | `localhost` | Qdrant host |
 | `QDRANT_PORT` | `6333` | Qdrant REST port |
@@ -152,46 +175,41 @@ All settings are in `.env` (see `.env.example`):
 
 ```
 graphrag-poc/
-├── docker-compose.yml          # Qdrant + NebulaGraph
-├── config/nebula/              # NebulaGraph configs
+├── Makefile                     # run, stop, clean, test, seed, init
+├── docker-compose.yml           # Qdrant + NebulaGraph
+├── config/nebula/               # NebulaGraph configs
 ├── app/
-│   ├── main.py                 # FastAPI app
-│   ├── config.py               # Pydantic settings
-│   ├── api/
-│   │   ├── exceptions.py       # Custom HTTP exceptions
-│   │   └── routes/             # Endpoint handlers
-│   ├── core/                   # Service wrappers (Qdrant, Nebula, LLM, embeddings)
-│   ├── pipelines/
-│   │   ├── ingestion.py        # Full ingestion pipeline
-│   │   ├── query.py             # Full query pipeline
-│   │   └── loaders.py           # Document loaders
-│   ├── models/
-│   │   ├── schemas.py          # Pydantic request/response models
-│   │   └── graph_schema.py     # NebulaGraph schema constants
-│   └── prompts/
-│       ├── extraction.py        # Entity/relation extraction prompt
-│       └── qa.py                # Question answering prompt
-├── tests/                      # Unit + integration tests
+│   ├── main.py                  # FastAPI app
+│   ├── config.py                # Pydantic settings
+│   ├── api/routes/              # Endpoint handlers
+│   ├── core/                    # LLM, embeddings, graph, vectorstore
+│   ├── pipelines/               # Ingestion + query pipelines
+│   ├── models/                  # Pydantic schemas
+│   └── prompts/                 # LLM prompts
+├── ui/
+│   ├── app.py                   # Streamlit entrypoint
+│   ├── pages/                   # Upload, Graph, Query, Documents
+│   └── components/              # api_client, sidebar, graph_renderer
+├── tests/                       # 109 unit + integration tests
 ├── scripts/
-│   └── init_nebula.py          # Initialize NebulaGraph schema
+│   ├── init_nebula.py           # Initialize NebulaGraph schema
+│   └── seed.py                  # Load sample data
 └── docs/
-    └── PRD.md                  # Product requirements document
+    ├── PRD.md                   # Original product requirements
+    └── PRD-STREAMLIT.md         # Streamlit UI requirements
 ```
 
 ## Running Tests
 
 ```bash
-uv run pytest tests/ -v
+make test
 ```
+
+Unit tests run with mocks (no Docker needed). Integration tests require Docker services and an API key.
 
 ## Stopping Services
 
 ```bash
-docker compose down
-```
-
-To remove all data (volumes):
-
-```bash
-docker compose down -v
+make stop        # stop Docker
+make clean       # stop Docker + remove all data volumes
 ```
