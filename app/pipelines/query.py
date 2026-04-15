@@ -110,17 +110,20 @@ def traverse_graph(entity_ids: list[str], hop_depth: int = 1) -> list[dict]:
 
             for row in result.rows():
                 try:
-                    vertex = row.values[0].as_node()
-                    props = vertex.properties
-                    name_val = props.get("name")
-                    if name_val:
-                        name = name_val.get_sVal()
-                        name = name.decode() if isinstance(name, bytes) else str(name)
-                        for gt in graph_triplets:
-                            if gt["subject_id"] == entity_id:
-                                gt["subject"] = name
-                            if gt["object_id"] == entity_id:
-                                gt["object"] = name
+                    v = row.values[0]
+                    vertex = v.get_vVal()
+                    vid_bytes = vertex.vid.get_sVal()
+                    vid_str = vid_bytes.decode() if isinstance(vid_bytes, bytes) else str(vid_bytes)
+                    for tag in vertex.tags:
+                        if tag.name == b"entity":
+                            name = tag.props.get(b"name")
+                            if name and name.get_sVal():
+                                name_str = name.get_sVal().decode()
+                                for gt in graph_triplets:
+                                    if gt["subject_id"] == vid_str:
+                                        gt["subject"] = name_str
+                                    if gt["object_id"] == vid_str:
+                                        gt["object"] = name_str
                 except Exception:
                     continue
 

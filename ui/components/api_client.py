@@ -52,6 +52,13 @@ class GraphData:
     edges: list[dict]
 
 
+@dataclass
+class GraphFilters:
+    entity_types: list[str]
+    relation_types: list[str]
+    source_docs: list[str]
+
+
 class ApiClient:
     def __init__(self, base_url: str = DEFAULT_BASE_URL, timeout: float = 120.0):
         self.base_url = base_url.rstrip("/")
@@ -174,8 +181,13 @@ class ApiClient:
             data = resp.json()
             return GraphData(nodes=data["nodes"], edges=data["edges"])
 
-    def graph_filters(self) -> dict:
+    def graph_filters(self) -> GraphFilters:
         with self._client() as c:
             resp = c.get("/graph/filters")
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            return GraphFilters(
+                entity_types=data["entity_types"],
+                relation_types=data["relation_types"],
+                source_docs=data["source_docs"],
+            )

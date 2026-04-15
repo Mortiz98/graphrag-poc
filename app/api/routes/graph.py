@@ -42,16 +42,153 @@ class GraphFiltersResponse(BaseModel):
     source_docs: list[str]
 
 
-def _get_degree(session, entity_id: str) -> int:
-    query_out = f'GO FROM "{entity_id}" OVER {EDGE_RELATED_TO} YIELD vertex AS v'
-    result = session.execute(query_out)
-    out_count = len(result.rows()) if result.is_succeeded() else 0
+def _extract_vertex(value) -> tuple[str, str, str] | None:
+    """Extract vid, name, type from a NebulaGraph vertex Value.
 
-    query_in = f'GO FROM "{entity_id}" OVER {EDGE_RELATED_TO} REVERSELY YIELD vertex AS v'
-    result = session.execute(query_in)
-    in_count = len(result.rows()) if result.is_succeeded() else 0
+    Returns (vid, name, type) or None if extraction fails.
+    """
+    try:
+        vertex = value.get_vVal()
+    except Exception:
+        return None
 
-    return out_count + in_count
+    if not vertex:
+        return None
+
+    try:
+        vid_bytes = vertex.vid.get_sVal()
+        vid = vid_bytes.decode() if isinstance(vid_bytes, bytes) else str(vid_bytes)
+    except Exception:
+        vid = ""
+
+    for tag in vertex.tags:
+        if tag.name == b"entity":
+            name = tag.props.get(b"name")
+            entity_type = tag.props.get(b"type")
+            name_str = name.get_sVal().decode() if name and name.get_sVal() else vid
+            type_str = entity_type.get_sVal().decode() if entity_type and entity_type.get_sVal() else "entity"
+            return vid, name_str, type_str
+
+    return vid, vid, "entity"
+
+
+def _build_all_nodes(session) -> tuple[dict[str, dict], dict[str, str]]:
+    """Load all vertices with their properties.
+
+    Returns:
+        nodes_map: {vid: {"id": vid, "label": name, "type": type, "degree": 0}}
+        vid_to_name: {vid: name}
+    """
+    result = session.execute("MATCH (n) RETURN n")
+    nodes_map = {}
+    vid_to_name = {}
+
+    if result.is_succeeded():
+        for row in result.rows():
+            extracted = _extract_vertex(row.values[0])
+            if not extracted:
+                continue
+            vid, name, entity_type = extracted
+            if vid not in nodes_map:
+                nodes_map[vid] = {
+                    "id": vid,
+                    "label": name,
+                    "type": entity_type,
+                    "degree": 0,
+                }
+            vid_to_name[vid] = name
+
+    return nodes_map, vid_to_name
+
+
+def _load_all_edges(session, vid_to_name: dict[str, str]) -> list[dict]:
+    """Load all related_to edges using MATCH, converting VIDs to names."""
+    result = session.execute("MATCH (s)-[r:related_to]->(t) RETURN s, r, t")
+    edges = []
+
+    if result.is_succeeded():
+        for row in result.rows():
+            try:
+                src_extracted = _extract_vertex(row.values[0])
+                dst_extracted = _extract_vertex(row.values[2])
+
+                if not src_extracted or not dst_extracted:
+                    continue
+
+                src_vid, src_name, _ = src_extracted
+                dst_vid, dst_name, _ = dst_extracted
+
+                rel = ""
+                edge = row.values[1].get_eVal()
+                if edge:
+                    rel_prop = edge.props.get(b"relation")
+                    if rel_prop and rel_prop.get_sVal():
+                        rel = rel_prop.get_sVal().decode()
+
+                edges.append({"source": src_vid, "target": dst_vid, "relation": rel})
+            except Exception:
+                continue
+
+    return edges
+
+
+def _load_edges_by_go(session, vid: str, direction: str = "out") -> list[dict]:
+    """Load edges from a vertex using GO query (for subgraph traversal).
+
+    direction: 'out' or 'in'
+    Returns list of {source_vid, target_vid, source_name, target_name, relation}
+    """
+    if direction == "out":
+        query = (
+            f'GO FROM "{vid}" OVER {EDGE_RELATED_TO} '
+            f"YIELD {EDGE_RELATED_TO}._src AS src, "
+            f"{EDGE_RELATED_TO}._dst AS dst, "
+            f"{EDGE_RELATED_TO}.relation AS rel"
+        )
+    else:
+        query = (
+            f'GO FROM "{vid}" OVER {EDGE_RELATED_TO} REVERSELY '
+            f"YIELD {EDGE_RELATED_TO}._src AS src, "
+            f"{EDGE_RELATED_TO}._dst AS dst, "
+            f"{EDGE_RELATED_TO}.relation AS rel"
+        )
+
+    result = session.execute(query)
+    edges = []
+
+    if result.is_succeeded():
+        for row in result.rows():
+            try:
+                src_vid_val = row.values[0].get_sVal()
+                src = src_vid_val.decode() if isinstance(src_vid_val, bytes) else str(src_vid_val)
+
+                dst_vid_val = row.values[1].get_sVal()
+                dst = dst_vid_val.decode() if isinstance(dst_vid_val, bytes) else str(dst_vid_val)
+
+                rel_val = row.values[2].get_sVal()
+                rel = rel_val.decode() if isinstance(rel_val, bytes) else str(rel_val)
+
+                if direction == "out":
+                    edges.append({"source_vid": src, "target_vid": dst, "relation": rel})
+                else:
+                    edges.append({"source_vid": src, "target_vid": dst, "relation": rel})
+            except Exception:
+                continue
+
+    return edges
+
+
+def _fetch_vertex_name(session, vid: str) -> tuple[str, str]:
+    """Fetch entity name and type for a given VID using MATCH."""
+    result = session.execute(f'MATCH (n) WHERE id(n) == "{vid}" RETURN n LIMIT 1')
+    if result.is_succeeded() and result.rows():
+        extracted = _extract_vertex(result.rows()[0].values[0])
+        if extracted:
+            _, name, entity_type = extracted
+            if not name:
+                name = vid.replace("_", " ")
+            return name, entity_type
+    return vid.replace("_", " "), "entity"
 
 
 @router.get(
@@ -65,32 +202,16 @@ async def list_entities():
         with get_nebula_session() as session:
             session.execute(f"USE {SPACE_NAME}")
 
-            result = session.execute("MATCH (n:entity) RETURN n.name AS name, n.type AS type")
-            if not result.is_succeeded():
-                raise HTTPException(status_code=500, detail="Query failed")
+            nodes_map, _ = _build_all_nodes(session)
+            edges = _load_all_edges(session, {})
 
-            entities = []
-            for row in result.rows():
-                try:
-                    name_val = row.values[0].get_sVal()
-                    name = name_val.decode() if isinstance(name_val, bytes) else str(name_val)
+            for edge in edges:
+                if edge["source"] in nodes_map:
+                    nodes_map[edge["source"]]["degree"] += 1
+                if edge["target"] in nodes_map:
+                    nodes_map[edge["target"]]["degree"] += 1
 
-                    type_val = row.values[1].get_sVal()
-                    entity_type = type_val.decode() if isinstance(type_val, bytes) else str(type_val)
-
-                    degree = _get_degree(session, name)
-
-                    entities.append(
-                        {
-                            "id": name,
-                            "name": name,
-                            "type": entity_type,
-                            "degree": degree,
-                        }
-                    )
-                except Exception:
-                    continue
-
+            entities = list(nodes_map.values())
             return GraphEntitiesResponse(entities=entities)
 
     except Exception as e:
@@ -108,34 +229,8 @@ async def list_edges():
         with get_nebula_session() as session:
             session.execute(f"USE {SPACE_NAME}")
 
-            query = "MATCH (s:entity)-[r:related_to]->(t:entity) RETURN s.name AS src, r.relation AS rel, t.name AS dst"
-            result = session.execute(query)
-
-            nodes_map = {}
-            edges = []
-
-            if result.is_succeeded():
-                for row in result.rows():
-                    try:
-                        src_val = row.values[0].get_sVal()
-                        src = src_val.decode() if isinstance(src_val, bytes) else str(src_val)
-
-                        rel_val = row.values[1].get_sVal()
-                        rel = rel_val.decode() if isinstance(rel_val, bytes) else str(rel_val)
-
-                        dst_val = row.values[2].get_sVal()
-                        dst = dst_val.decode() if isinstance(dst_val, bytes) else str(dst_val)
-
-                        if src not in nodes_map:
-                            nodes_map[src] = {"id": src, "label": src, "type": "entity", "degree": 0}
-                        if dst not in nodes_map:
-                            nodes_map[dst] = {"id": dst, "label": dst, "type": "entity", "degree": 0}
-
-                        edges.append({"source": src, "target": dst, "relation": rel})
-                    except Exception:
-                        continue
-
-            nodes = list(nodes_map.values())
+            nodes_map, _ = _build_all_nodes(session)
+            edges = _load_all_edges(session, {})
 
             for edge in edges:
                 if edge["source"] in nodes_map:
@@ -143,6 +238,7 @@ async def list_edges():
                 if edge["target"] in nodes_map:
                     nodes_map[edge["target"]]["degree"] += 1
 
+            nodes = list(nodes_map.values())
             return GraphEdgesResponse(nodes=nodes, edges=edges)
 
     except Exception as e:
@@ -170,71 +266,37 @@ async def get_subgraph(entity: str, hops: int = 1):
                     break
                 next_layer = set()
 
-                for ent_id in current_layer:
-                    if ent_id in visited:
+                for vid in current_layer:
+                    if vid in visited:
                         continue
-                    visited.add(ent_id)
+                    visited.add(vid)
 
-                    name_query = f'FETCH PROP ON entity "{ent_id}" YIELD vertex AS v'
-                    name_result = session.execute(name_query)
+                    ent_name, ent_type = _fetch_vertex_name(session, vid)
+                    if vid not in nodes_map:
+                        nodes_map[vid] = {
+                            "id": vid,
+                            "label": ent_name,
+                            "type": ent_type,
+                            "degree": 0,
+                        }
 
-                    ent_name = ent_id
-                    ent_type = "entity"
-                    if name_result.is_succeeded() and name_result.rows():
-                        try:
-                            vertex = name_result.rows()[0].values[0].as_node()
-                            props = vertex.properties
-                            if "name" in props:
-                                n_val = props["name"].get_sVal()
-                                ent_name = n_val.decode() if isinstance(n_val, bytes) else str(n_val)
-                            if "type" in props:
-                                t_val = props["type"].get_sVal()
-                                ent_type = t_val.decode() if isinstance(t_val, bytes) else str(t_val)
-                        except Exception:
-                            pass
+                    out_edges = _load_edges_by_go(session, vid, direction="out")
+                    for e in out_edges:
+                        dst_vid = e["target_vid"]
+                        edges.append({"source": vid, "target": dst_vid, "relation": e["relation"]})
+                        if dst_vid not in nodes_map:
+                            name, typ = _fetch_vertex_name(session, dst_vid)
+                            nodes_map[dst_vid] = {"id": dst_vid, "label": name, "type": typ, "degree": 0}
+                        next_layer.add(dst_vid)
 
-                    if ent_id not in nodes_map:
-                        nodes_map[ent_id] = {"id": ent_id, "label": ent_name, "type": ent_type, "degree": 0}
-
-                    out_query = f'GO FROM "{ent_id}" OVER {EDGE_RELATED_TO} YIELD src, dst, relation'
-                    out_result = session.execute(out_query)
-                    if out_result.is_succeeded():
-                        for row in out_result.rows():
-                            try:
-                                dst_val = row.values[1].get_sVal()
-                                dst = dst_val.decode() if isinstance(dst_val, bytes) else str(dst_val)
-
-                                rel_val = row.values[2].get_sVal()
-                                rel = rel_val.decode() if isinstance(rel_val, bytes) else str(rel_val)
-
-                                edges.append({"source": ent_id, "target": dst, "relation": rel})
-
-                                if dst not in nodes_map:
-                                    nodes_map[dst] = {"id": dst, "label": dst, "type": "entity", "degree": 0}
-
-                                next_layer.add(dst)
-                            except Exception:
-                                continue
-
-                    in_query = f'GO FROM "{ent_id}" OVER {EDGE_RELATED_TO} REVERSELY YIELD src, dst, relation'
-                    in_result = session.execute(in_query)
-                    if in_result.is_succeeded():
-                        for row in in_result.rows():
-                            try:
-                                src_val = row.values[0].get_sVal()
-                                src = src_val.decode() if isinstance(src_val, bytes) else str(src_val)
-
-                                rel_val = row.values[2].get_sVal()
-                                rel = rel_val.decode() if isinstance(rel_val, bytes) else str(rel_val)
-
-                                edges.append({"source": src, "target": ent_id, "relation": rel})
-
-                                if src not in nodes_map:
-                                    nodes_map[src] = {"id": src, "label": src, "type": "entity", "degree": 0}
-
-                                next_layer.add(src)
-                            except Exception:
-                                continue
+                    in_edges = _load_edges_by_go(session, vid, direction="in")
+                    for e in in_edges:
+                        src_vid = e["source_vid"]
+                        edges.append({"source": src_vid, "target": vid, "relation": e["relation"]})
+                        if src_vid not in nodes_map:
+                            name, typ = _fetch_vertex_name(session, src_vid)
+                            nodes_map[src_vid] = {"id": src_vid, "label": name, "type": typ, "degree": 0}
+                        next_layer.add(src_vid)
 
                 current_layer = next_layer
 
@@ -267,27 +329,16 @@ async def get_filters():
         with get_nebula_session() as session:
             session.execute(f"USE {SPACE_NAME}")
 
-            type_result = session.execute("MATCH (n:entity) RETURN DISTINCT n.type AS type")
-            if type_result.is_succeeded():
-                for row in type_result.rows():
-                    try:
-                        t_val = row.values[0].get_sVal()
-                        t = t_val.decode() if isinstance(t_val, bytes) else str(t_val)
-                        if t:
-                            entity_types.add(t)
-                    except Exception:
-                        continue
+            nodes_map, _ = _build_all_nodes(session)
 
-            rel_result = session.execute(f"MATCH ()-[r:{EDGE_RELATED_TO}]->() RETURN DISTINCT r.relation AS rel")
-            if rel_result.is_succeeded():
-                for row in rel_result.rows():
-                    try:
-                        r_val = row.values[0].get_sVal()
-                        r = r_val.decode() if isinstance(r_val, bytes) else str(r_val)
-                        if r:
-                            relation_types.add(r)
-                    except Exception:
-                        continue
+            for node_data in nodes_map.values():
+                if node_data["type"]:
+                    entity_types.add(node_data["type"])
+
+            edges = _load_all_edges(session, {})
+            for edge in edges:
+                if edge["relation"]:
+                    relation_types.add(edge["relation"])
 
     except Exception:
         pass

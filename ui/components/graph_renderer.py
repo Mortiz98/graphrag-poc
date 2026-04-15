@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
-
-from streamlit_agraph import Edge, Node
+from streamlit_agraph import Config, Edge, Node
 
 ENTITY_COLORS = {
     "Technology": "#4FC3F7",
@@ -59,15 +57,20 @@ def build_agraph_edges(edges: list[dict]) -> list[Edge]:
 def build_agraph_config(
     layout: str = "force-directed",
     physics: bool = True,
-    height: int = 600,
-) -> dict[str, Any]:
-    return {
-        "height": height,
-        "layout": layout,
-        "physics": physics,
-        "direction": "UD",
-        "hierarchical": True if layout == "hierarchical" else False,
-    }
+    height: int = 800,
+) -> Config:
+    direction = "LR" if layout == "hierarchical" else "UD"
+    hierarchical_enabled = True if layout == "hierarchical" else False
+
+    return Config(
+        height=height,
+        width=1600,
+        directed=True,
+        physics=physics,
+        hierarchical=hierarchical_enabled,
+        graph={"direction": direction},
+        layout={"hierarchical": {"enabled": hierarchical_enabled}},
+    )
 
 
 def filter_graph(

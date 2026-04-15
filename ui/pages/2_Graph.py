@@ -1,5 +1,5 @@
 import streamlit as st
-from streamlit_agraph import ConfigBuilder, agraph
+from streamlit_agraph import agraph
 
 from ui.components.graph_renderer import (
     build_agraph_config,
@@ -72,14 +72,11 @@ with st.spinner("Loading graph data..."):
                 physics=physics_enabled,
                 height=600,
             )
-            config_builder = ConfigBuilder()
-            config_builder.from_config(config)
-            final_config = config_builder.build()
 
             selected_node = agraph(
                 nodes=agraph_nodes,
                 edges=agraph_edges,
-                config=final_config,
+                config=config,
             )
 
             if selected_node:
@@ -104,10 +101,13 @@ with st.spinner("Loading graph data..."):
                     connected_edges = [e for e in edges if e["source"] == node_id or e["target"] == node_id]
                     if connected_edges:
                         st.markdown("**Connections:**")
+                        node_label = node_data.get("label", node_id)
                         for edge in connected_edges[:10]:
+                            other_id = edge["target"] if edge["source"] == node_id else edge["source"]
+                            other_node = next((n for n in nodes if n["id"] == other_id), None)
+                            other_label = other_node.get("label", other_id) if other_node else other_id
                             direction = "→" if edge["source"] == node_id else "←"
-                            other = edge["target"] if edge["source"] == node_id else edge["source"]
-                            st.markdown(f"- {node_id} {edge.get('relation', 'related')} {direction} {other}")
+                            st.markdown(f"- {node_label} {edge.get('relation', 'related')} {direction} {other_label}")
 
                     if st.button("View 1-hop neighborhood"):
                         with st.spinner("Loading neighborhood..."):

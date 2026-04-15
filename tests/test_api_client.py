@@ -342,7 +342,9 @@ class TestGraphFilters:
 
         client = ApiClient()
         filters = client.graph_filters()
-        assert "entity_types" in filters
+        assert filters.entity_types == ["Technology", "Person"]
+        assert filters.relation_types == ["is_a", "developed_by"]
+        assert filters.source_docs == ["test.txt"]
 
 
 class TestSeed:
