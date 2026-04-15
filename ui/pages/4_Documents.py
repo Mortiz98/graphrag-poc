@@ -60,14 +60,17 @@ try:
             with cols[3]:
                 if st.button("🗑️", key=f"del_{doc.filename}", help="Delete"):
                     try:
-                        result = client.delete_document(doc.filename)
+                        with st.spinner("Deleting..."):
+                            result = client.delete_document(doc.filename)
                         st.success(
                             f"Deleted {result['vectors_deleted']} vectors, "
                             f"{result['entities_deleted_from_graph']} entities"
                         )
+                        st.toast("Document deleted successfully", icon="✅")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Delete failed: {e}")
+                        st.toast(f"Delete failed: {e}", icon="❌")
             st.divider()
 
         if st.session_state.selected_doc:
@@ -78,3 +81,4 @@ try:
 
 except Exception as e:
     st.error(f"Could not load documents: {e}")
+    st.toast(f"Error: {e}", icon="❌")

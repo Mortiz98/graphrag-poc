@@ -19,8 +19,9 @@ with col2:
             with st.spinner("Loading sample data..."):
                 result = client.seed()
             st.success(f"**{result.filename}** — {result.chunks_count} chunks, {result.triplets_count} triplets")
+            st.rerun()
         except Exception as e:
-            st.error(f"Seed failed: {e}")
+            st.toast(f"Seed failed: {e}", icon="❌")
 
 uploaded_files = st.file_uploader(
     "Choose files",
@@ -31,6 +32,10 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     st.divider()
     st.markdown("### Processing")
+
+    success_count = 0
+    error_count = 0
+
     for uploaded in uploaded_files:
         with st.spinner(f"Processing {uploaded.name}..."):
             try:
@@ -43,5 +48,15 @@ if uploaded_files:
                     f"**{result.filename}** — {result.chunks_count} chunks, "
                     f"{result.triplets_count} triplets ({result.status})"
                 )
+                success_count += 1
             except Exception as e:
                 st.error(f"Error processing {uploaded.name}: {e}")
+                error_count += 1
+
+    if success_count > 0:
+        st.toast(f"Successfully processed {success_count} file(s)", icon="✅")
+    if error_count > 0:
+        st.toast(f"Failed to process {error_count} file(s)", icon="❌")
+
+    if success_count > 0:
+        st.rerun()

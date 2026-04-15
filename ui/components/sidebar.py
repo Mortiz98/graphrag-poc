@@ -29,10 +29,11 @@ def render_sidebar() -> None:
             st.markdown(f"{'🟢' if llm_ok else '🔴'} LLM (OpenRouter)")
 
             if not (qdrant_ok and nebula_ok):
-                st.warning("Some services are unavailable. Run `docker compose up -d`.")
+                st.toast("Some services are unavailable. Run `docker compose up -d`.", icon="⚠️")
 
             if not llm_ok:
-                st.warning("LLM not configured. Set OPENROUTER_API_KEY in .env.")
+                st.toast("LLM not configured. Set OPENROUTER_API_KEY in .env.", icon="⚠️")
         except Exception:
             st.error("Backend API unreachable at " + DEFAULT_BASE_URL)
             st.caption("Start it with: `uv run uvicorn app.main:app --port 8000`")
+            st.toast("Backend unavailable. Start API server to use the UI.", icon="❌")

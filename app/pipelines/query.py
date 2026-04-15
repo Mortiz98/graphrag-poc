@@ -184,6 +184,26 @@ def generate_answer(question: str, context: str) -> str:
     return answer
 
 
+def stream_answer(question: str, context: str):
+    if not context.strip():
+        yield "I could not find relevant information to answer your question."
+        return
+
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    llm = get_llm(temperature=0.1, streaming=True)
+    prompt = QA_USER_PROMPT.format(context=context, question=question)
+
+    messages = [
+        SystemMessage(content=QA_SYSTEM_PROMPT),
+        HumanMessage(content=prompt),
+    ]
+
+    for chunk in llm.stream(messages):
+        if chunk.content:
+            yield chunk.content
+
+
 def query(question: str, top_k: int = 5) -> QueryResponse:
     logger.info("query_started", question=question[:50], top_k=top_k)
 

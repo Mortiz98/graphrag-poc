@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.models.schemas import QueryRequest, QueryResponse
+from app.pipelines.query import _fuse_context, search_similar_triplets, stream_answer, traverse_graph
 from app.pipelines.query import query as query_pipeline
 
 router = APIRouter(prefix="/api/v1", tags=["query"])
@@ -21,6 +23,44 @@ router = APIRouter(prefix="/api/v1", tags=["query"])
 async def query_endpoint(request: QueryRequest):
     try:
         return query_pipeline(request.question, request.top_k)
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Error processing query: {str(e)}",
+        )
+
+
+@router.post(
+    "/query/stream",
+    summary="Ask a question with streaming response",
+    description="Same as /query but streams the LLM response token-by-token using SSE.",
+    responses={
+        200: {"description": "Streaming response"},
+        503: {"description": "Backend service unavailable"},
+    },
+)
+async def query_stream_endpoint(request: QueryRequest):
+    try:
+        vector_triplets = search_similar_triplets(request.question, request.top_k)
+
+        entity_ids = list(
+            {t["subject_id"] for t in vector_triplets if t.get("subject_id")}
+            | {t["object_id"] for t in vector_triplets if t.get("object_id")}
+        )
+
+        graph_triplets = traverse_graph(entity_ids, hop_depth=1)
+
+        context, _ = _fuse_context(vector_triplets, graph_triplets)
+
+        if not context.strip():
+            context = "No relevant context found."
+
+        async def event_stream():
+            for token in stream_answer(request.question, context):
+                yield f"data: {token}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
         raise HTTPException(
             status_code=503,

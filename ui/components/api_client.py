@@ -98,12 +98,6 @@ class ApiClient:
                 triplets_count=data["triplets_count"],
                 status=data["status"],
             )
-            return IngestResult(
-                filename=data["filename"],
-                chunks_count=data["chunks_count"],
-                triplets_count=data["triplets_count"],
-                status=data["status"],
-            )
 
     def query(self, question: str, top_k: int = 5) -> QueryResult:
         with self._client() as c:
@@ -116,6 +110,18 @@ class ApiClient:
                 entities_found=data["entities_found"],
                 confidence=data["confidence"],
             )
+
+    def query_stream(self, question: str, top_k: int = 5):
+        with self._client() as c:
+            with c.stream("POST", "/query/stream", json={"question": question, "top_k": top_k}) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if line:
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+                            yield data
 
     def list_documents(self) -> list[DocumentInfo]:
         with self._client() as c:

@@ -3,16 +3,16 @@
 DOCKER_UP := docker compose up -d
 DOCKER_DOWN := docker compose down
 API_CMD := uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-UI_CMD := uv run streamlit run ui/app.py --server.port 8501
+UI_CMD := PYTHONPATH=. uv run streamlit run ui/app.py --server.port 8501 --server.headless true
 
 run: ## Start everything (Docker + API + Streamlit)
 	@$(DOCKER_UP)
 	@echo "Waiting for Docker services..."
 	@sleep 3
 	@echo "Initializing NebulaGraph schema (if needed)..."
-	@uv run python -c "from scripts.init_nebula import init_schema; init_schema()" 2>/dev/null || echo "Schema init skipped (may already exist)"
+	@PYTHONPATH=. uv run python -c "from scripts.init_nebula import init_schema; init_schema()" 2>/dev/null || echo "Schema init skipped (may already exist)"
 	@echo "Starting API server..."
-	@$(API_CMD) &
+	@PYTHONPATH=. $(API_CMD) &
 	@API_PID=$$!; \
 	echo "API running (PID $$API_PID)"; \
 	echo "Starting Streamlit UI..."; \
@@ -21,7 +21,7 @@ run: ## Start everything (Docker + API + Streamlit)
 
 run-api: ## Start only the FastAPI server
 	@$(DOCKER_UP)
-	@$(API_CMD)
+	@PYTHONPATH=. $(API_CMD)
 
 run-ui: ## Start only the Streamlit UI (API must be running)
 	@$(UI_CMD)
@@ -38,13 +38,13 @@ clean: ## Full reset — removes Docker volumes and caches
 	@echo "Cleaned."
 
 test: ## Run lint + format + unit tests
-	@uv run ruff check app/ tests/ && uv run ruff format app/ tests/ && uv run pytest tests/ -v
+	@PYTHONPATH=. uv run ruff check app/ tests/ && uv run ruff format app/ tests/ && PYTHONPATH=. uv run pytest tests/ -v
 
 seed: ## Load sample data into the system
-	@uv run python -c "from scripts.seed import seed; seed()"
+	@PYTHONPATH=. uv run python -c "from scripts.seed import seed; seed()"
 
 init: ## Initialize NebulaGraph schema
-	@uv run python -c "from scripts.init_nebula import init_schema; init_schema()"
+	@PYTHONPATH=. uv run python -c "from scripts.init_nebula import init_schema; init_schema()"
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-12s\033[0m %s\n", $$1, $$2}'
