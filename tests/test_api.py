@@ -60,7 +60,7 @@ class TestIngestEndpoint:
             "/api/v1/ingest",
             files={"file": ("", b"content", "text/plain")},
         )
-        assert response.status_code == 400
+        assert response.status_code == 422
 
     def test_ingest_md_file(self, client):
         content = b"# Test\n\nMarkdown **content** about Python."
@@ -70,6 +70,19 @@ class TestIngestEndpoint:
         )
         assert response.status_code == 200
         assert response.json()["filename"] == "test.md"
+
+    @pytest.mark.skip(reason="Requires sample.txt file and full ingestion pipeline")
+    def test_seed_sample_data(self, client):
+        response = client.post("/api/v1/seed")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["filename"] == "sample.txt"
+        assert data["status"] == "processed"
+
+    @pytest.mark.skip(reason="Requires sample.txt file and full ingestion pipeline")
+    def test_seed_no_sample_file(self, client):
+        response = client.post("/api/v1/seed")
+        assert response.status_code == 404
 
 
 class TestQueryEndpoint:

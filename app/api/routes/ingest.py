@@ -15,6 +15,8 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
 
+SAMPLE_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "test_data"
+
 
 @router.post(
     "/ingest",
@@ -59,3 +61,34 @@ async def ingest_file(file: UploadFile = File(...)):
         if tmp_path.exists():
             tmp_path.unlink()
         Path(tmp_dir).rmdir()
+
+
+@router.post(
+    "/seed",
+    response_model=IngestResponse,
+    summary="Ingest sample data",
+    description="Ingest the sample.txt file from test_data directory.",
+    responses={
+        200: {"description": "Sample data processed successfully"},
+        404: {"description": "Sample file not found"},
+        503: {"description": "Backend service unavailable"},
+    },
+)
+async def seed_data():
+    sample_file = SAMPLE_DATA_DIR / "sample.txt"
+    if not sample_file.exists():
+        raise HTTPException(status_code=404, detail="Sample file not found")
+
+    try:
+        result = ingest_document(sample_file)
+        return IngestResponse(
+            filename=result["filename"],
+            chunks_count=result["chunks_count"],
+            triplets_count=result["triplets_count"],
+            status=result["status"],
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Error processing sample data: {str(e)}",
+        )

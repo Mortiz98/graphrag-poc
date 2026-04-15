@@ -2,22 +2,33 @@
 
 ## Project overview
 
-GraphRAG PoC — a hybrid RAG system that combines vector search (Qdrant) with graph traversal (NebulaGraph) for answering questions over ingested documents.
+GraphRAG PoC — a hybrid RAG system that combines vector search (Qdrant) with graph traversal (NebulaGraph) for answering questions over ingested documents, with a Streamlit UI for visualization and interaction.
 
 ## Dev commands
 
 ```bash
+make run                         # start everything (Docker + API + Streamlit)
+make test                        # lint + format + run all tests
+make stop                        # stop Docker services
+make clean                       # full reset (deletes Docker volumes)
+make seed                        # load sample data
+make init                        # initialize NebulaGraph schema
+```
+
+Manual alternatives:
+
+```bash
 uv sync                          # install dependencies
 uv sync --extra dev              # install dev deps (pytest, ruff)
-uv run ruff check --fix app/ tests/  # lint
-uv run ruff format app/ tests/       # format
-uv run pytest tests/ -v              # run all tests (74 unit + integration)
+uv run ruff check --fix app/ tests/ ui/  # lint
+uv run ruff format app/ tests/ ui/       # format
+uv run pytest tests/ -v                  # run all tests (108 unit + integration)
 ```
 
 ## Required order before commits
 
 ```bash
-uv run ruff check app/ tests/ && uv run ruff format app/ tests/ && uv run pytest tests/ -v
+uv run ruff check app/ tests/ ui/ && uv run ruff format app/ tests/ ui/ && uv run pytest tests/ -v
 ```
 
 Lint/format must pass before committing. Tests require Docker services running (Qdrant + NebulaGraph) and a valid `OPENROUTER_API_KEY` in `.env`.
@@ -33,7 +44,7 @@ docker compose up -d
 NebulaGraph schema must be initialized after first startup or after `docker compose down -v`:
 
 ```bash
-uv run python -c "from scripts.init_nebula import init_schema; init_schema()"
+make init
 ```
 
 There is a **5-second sleep** between `CREATE SPACE` and `USE graphrag` in `scripts/init_nebula.py` — NebulaGraph needs this delay for async space creation.
@@ -57,6 +68,7 @@ There is a **5-second sleep** between `CREATE SPACE` and `USE graphrag` in `scri
 
 - The client uses `query_points()` (not `search()`) — this was changed for qdrant-client v1.17+.
 - Collection is auto-created on first ingestion if it doesn't exist (`ensure_collection_exists` in `vectorstore.py`).
+- Payload indexes on `source_doc`, `chunk_id`, `subject_id`, `object_id` are created automatically.
 
 ## Architecture
 
@@ -85,6 +97,16 @@ app/
   prompts/
     extraction.py       # LLM prompt for entity/relation extraction
     qa.py               # LLM prompt for question answering
+ui/
+  app.py                 # Streamlit entrypoint (multipage)
+  pages/
+    1_Upload.py          # Document upload page
+    2_Graph.py           # Graph explorer (placeholder)
+    3_Query.py           # Chat & query interface
+    4_Documents.py       # Document management
+  components/
+    api_client.py        # httpx REST client for FastAPI
+    sidebar.py           # Shared sidebar with service health
 ```
 
 ## Key conventions
@@ -99,14 +121,15 @@ app/
 ## Testing
 
 - Integration tests in `tests/test_api.py` hit live services (Qdrant, NebulaGraph, OpenRouter). They require Docker running and a valid API key.
-- Unit tests (`test_schemas.py`, `test_loaders.py`, `test_ingestion.py`, `test_query.py`, `test_core.py`, `test_vectorstore.py`) are pure Python with mocks and need no services.
-- Unit tests cover: schema validation, loaders, chunking, triplet extraction, graph/vector storage, graph traversal, context fusion, confidence scoring, connection pooling, health checks.
+- Unit tests (`test_schemas.py`, `test_loaders.py`, `test_ingestion.py`, `test_query.py`, `test_core.py`, `test_vectorstore.py`, `test_api_client.py`) are pure Python with mocks and need no services.
+- Unit tests cover: schema validation, loaders, chunking, triplet extraction, graph/vector storage, graph traversal, context fusion, confidence scoring, connection pooling, health checks, API client.
 - Integration tests make real API calls (no LLM mocks).
 
-## API server
+## Running the system
 
 ```bash
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+make run
 ```
 
-Swagger UI at `http://localhost:8000/docs`.
+- FastAPI at `http://localhost:8000` — Swagger UI at `/docs`
+- Streamlit at `http://localhost:8501` — main UI
