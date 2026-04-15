@@ -36,7 +36,7 @@ make run
 ### 1. Clone and configure
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/Mortiz98/graphrag-poc.git
 cd graphrag-poc
 cp .env.example .env
 # Edit .env and add your OpenRouter API key
