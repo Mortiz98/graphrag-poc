@@ -1,0 +1,67 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nebula-metad:
+    image: vesoft/nebula-metad:v3
+    volumes:
+      - nebula_meta_data:/data/meta
+      - ./config/nebula/nebula-metad.conf:/usr/local/nebula/etc/nebula-metad.conf:ro
+    ports:
+      - "19559:19559"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:19559/status || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  nebula-storaged:
+    image: vesoft/nebula-storaged:v3
+    volumes:
+      - nebula_storage_data:/data/storage
+      - ./config/nebula/nebula-storaged.conf:/usr/local/nebula/etc/nebula-storaged.conf:ro
+    ports:
+      - "19779:19779"
+    depends_on:
+      - nebula-metad
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:19779/status || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  nebula:
+    image: vesoft/nebula-graphd:v3
+    volumes:
+      - ./config/nebula/nebula-graphd.conf:/usr/local/nebula/etc/nebula-graphd.conf:ro
+    ports:
+      - "9669:9669"
+      - "19669:19669"
+    depends_on:
+      - nebula-metad
+      - nebula-storaged
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:19669/status || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+volumes:
+  qdrant_data:
+  nebula_meta_data:
+  nebula_storage_data:
