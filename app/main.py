@@ -22,7 +22,18 @@ structlog.configure(
 
 app = FastAPI(
     title="GraphRAG PoC",
-    description="Knowledge graph + vector search hybrid RAG system",
+    description="""
+Knowledge graph + vector search hybrid RAG system.
+
+## Endpoints
+
+- **POST /api/v1/ingest** — Upload a document (PDF/TXT/MD) for processing
+- **POST /api/v1/query** — Ask a question and get an answer with sources
+- **GET /api/v1/documents** — List ingested documents
+- **DELETE /api/v1/documents/{filename}** — Delete a document and its data
+- **GET /api/v1/graph/stats** — Get knowledge graph statistics
+- **GET /api/v1/health** — Health check for all services
+    """,
     version="0.1.0",
 )
 
