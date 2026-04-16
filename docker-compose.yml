@@ -61,21 +61,6 @@ services:
       retries: 20
       start_period: 60s
 
-  nebula-studio:
-    image: vesoft/nebula-studio:v3
-    ports:
-      - "7001:7001"
-    environment:
-      NEBULA_STUDIO_SERVER_PORT: "7001"
-    depends_on:
-      - nebula
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:7001 || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
 volumes:
   qdrant_data:
   nebula_meta_data:
