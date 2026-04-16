@@ -1,15 +1,15 @@
 # GraphRAG PoC
 
-Hybrid RAG system with Google ADK, Qdrant and NebulaGraph. Two agentive memory systems: Virtual Support and Account Manager.
+Sistema hibrido RAG con Google ADK, Qdrant y NebulaGraph. Dos sistemas de memoria agentiva: Soporte Virtual y Account Manager.
 
-## Systems
+## Sistemas
 
-| System | Purpose |
-|--------|---------|
-| **A (Support)** | Knowledge base with product/version filters, grounded responses |
-| **B (Account Manager)** | Longitudinal memory: facts, episodes, commitments, continuity |
+| Sistema | Proposito |
+|---------|-----------|
+| **A (Soporte)** | Base de conocimiento con filtros por producto/version, respuestas fundamentadas |
+| **B (Account Manager)** | Memoria longitudinal: hechos, episodios, compromisos, continuidad |
 
-## Architecture
+## Arquitectura
 
 ```
 make run
@@ -35,102 +35,102 @@ make run
    (agents)
 ```
 
-## Quick Start
+## Inicio Rapido
 
-### Prerequisites
+### Requisitos
 
 - Docker & Docker Compose
 - Python 3.10+
 - [uv](https://docs.astral.sh/uv/)
 
-### 1. Clone and configure
+### 1. Clonar y configurar
 
 ```bash
 git clone https://github.com/Mortiz98/graphrag-poc.git
 cd graphrag-poc
 cp .env.example .env
-# Edit .env: add OPENROUTER_API_KEY or GEMINI_API_KEY
+# Editar .env: agregar OPENROUTER_API_KEY o GEMINI_API_KEY
 ```
 
-### 2. Install
+### 2. Instalar
 
 ```bash
 uv sync
 ```
 
-### 3. Start
+### 3. Iniciar
 
 ```bash
 make run
 ```
 
 - **Streamlit UI**: http://localhost:8501
-- **API docs**: http://localhost:8000/docs
+- **Documentacion API**: http://localhost:8000/docs
 
-### 4. Load sample data
+### 4. Cargar datos de prueba
 
 ```bash
 make seed
 ```
 
-## API Endpoints
+## Endpoints API
 
-| Method | Endpoint | Description |
+| Metodo | Endpoint | Descripcion |
 |--------|----------|-------------|
 | `GET` | `/api/v1/health` | Health check |
-| `POST` | `/api/v1/ingest` | Upload document (PDF/TXT/MD) |
-| `POST` | `/api/v1/seed` | Load sample.txt |
-| `POST` | `/api/v1/query` | Sync query |
-| `POST` | `/api/v1/query/stream` | Streaming query (SSE) |
-| `GET` | `/api/v1/documents` | List documents |
-| `DELETE` | `/api/v1/documents/{filename}` | Delete document |
-| `GET` | `/api/v1/graph/*` | Graph endpoints |
+| `POST` | `/api/v1/ingest` | Subir documento (PDF/TXT/MD) |
+| `POST` | `/api/v1/seed` | Cargar sample.txt |
+| `POST` | `/api/v1/query` | Consulta sincronica |
+| `POST` | `/api/v1/query/stream` | Consulta streaming (SSE) |
+| `GET` | `/api/v1/documents` | Listar documentos |
+| `DELETE` | `/api/v1/documents/{filename}` | Eliminar documento |
+| `GET` | `/api/v1/graph/*` | Endpoints de grafo |
 | `GET` | `/api/v1/traces/*` | Retrieval traces |
-| `POST` | `/api/v1/agents/support/query` | Support agent (ADK) |
-| `POST` | `/api/v1/agents/am/query` | Account Manager agent (ADK) |
+| `POST` | `/api/v1/agents/support/query` | Agente de soporte (ADK) |
+| `POST` | `/api/v1/agents/am/query` | Agente Account Manager (ADK) |
 
-## Development Phases
+## Fases de Desarrollo
 
-| Phase | Status | Description |
+| Fase | Estado | Descripcion |
 |------|--------|-------------|
-| 0 | ✅ | Base platform, ADK, retrieval, evals |
-| 1A | 🔄 | MVP Support (grounded responses) |
-| 1B | ⏳ | MVP Account Manager (continuity) |
+| 0 | ✅ | Plataforma base, ADK, retrieval, evals |
+| 1A | 🔄 | MVP Soporte (respuestas fundamentadas) |
+| 1B | ⏳ | MVP Account Manager (continuidad) |
 | 2 | ⏳ | Sparse + hybrid + reranking |
-| 3A/3B | ⏳ | Domain and temporal graphs |
-| 4-5 | ⏳ | Experiments and scaling |
+| 3A/3B | ⏳ | Grafos de dominio y temporal |
+| 4-5 | ⏳ | Experimentos y escalado |
 
-## How It Works
+## Como Funciona
 
 ### Ingestion
 
 1. **Load** — PDF/TXT/MD
 2. **Chunk** — RecursiveCharacterTextSplitter (1000 chars, 200 overlap)
-3. **Extract** — LLM extracts triplets (subject → predicate → object)
-4. **Store graph** — Entities and relations in NebulaGraph
-5. **Store vectors** — Triplets embedded in Qdrant
+3. **Extract** — LLM extrae tripletas (sujeto → predicado → objeto)
+4. **Store graph** — Entidades y relaciones en NebulaGraph
+5. **Store vectors** — Tripletas embeddadas en Qdrant
 
 ### Query
 
 1. **Embed question** → vector
 2. **Dense search** — Qdrant top-K
-3. **Graph expansion** — NebulaGraph expands context
-4. **Fuse** — Deduplicate results
-5. **Generate** — LLM produces answer
+3. **Graph expansion** — NebulaGraph expande contexto
+4. **Fuse** — Deduplicar resultados
+5. **Generate** — LLM produce respuesta
 
-## Configuration (.env)
+## Configuracion (.env)
 
-| Variable | Default | Description |
+| Variable | Default | Descripcion |
 |----------|---------|-------------|
-| `OPENROUTER_API_KEY` | — | OpenRouter key |
-| `GEMINI_API_KEY` | — | Google Gemini key (optional) |
+| `OPENROUTER_API_KEY` | — | Clave OpenRouter |
+| `GEMINI_API_KEY` | — | Clave Google Gemini (opcional) |
 | `OPENROUTER_LLM_MODEL` | `openai/gpt-4o-mini` | LLM |
 | `OPENROUTER_EMBEDDING_MODEL` | `text-embedding-3-small` | Embeddings (1536d) |
 | `QDRANT_HOST` | `localhost` | Qdrant |
 | `NEBULA_HOST` | `localhost` | NebulaGraph |
-| `NEBULA_SPACE` | `graphrag` | Space name |
+| `NEBULA_SPACE` | `graphrag` | Nombre del space |
 
-## Project Structure
+## Estructura del Proyecto
 
 ```
 graphrag-poc/
@@ -139,13 +139,13 @@ graphrag-poc/
 ├── app/
 │   ├── main.py
 │   ├── config.py
-│   ├── agents/          # Google ADK agents
+│   ├── agents/          # Agentes Google ADK
 │   ├── api/routes/
 │   ├── core/           # LLM, embeddings, graph, vectorstore, retrieval
 │   ├── pipelines/       # ingestion, query, consolidation
 │   └── models/
-├── evals/              # metrics and truth sets
-├── ui/                 # Streamlit pages
+├── evals/              # metricas y truth sets
+├── ui/                 # Paginas Streamlit
 └── tests/              # 199 tests
 ```
 
@@ -153,10 +153,10 @@ graphrag-poc/
 
 ```bash
 make test
-# or: uv run pytest tests/ -v
+# o: uv run pytest tests/ -v
 ```
 
-## Evaluation
+## Evaluacion
 
 ```bash
 python -c "from evals.runner import run_retrieval_eval; print(run_retrieval_eval('evals/truth_sets/support_qa.jsonl'))"
