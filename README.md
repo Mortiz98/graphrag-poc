@@ -1,28 +1,38 @@
 # GraphRAG PoC
 
-Knowledge graph + vector search hybrid RAG system with an interactive Streamlit UI. Upload documents, visualize the knowledge graph, and ask questions — all from the browser.
+Hybrid RAG system con Google ADK, Qdrant y NebulaGraph. Dos sistemas de memoria agentiva: Soporte Virtual y Account Manager.
 
-## Architecture
+## Sistemas
+
+| Sistema | Propósito |
+|---------|-----------|
+| **A (Soporte)** | Base de conocimiento con filtros por producto/versión, respuesta con fuentes |
+| **B (Account Manager)** | Memoria longitudinal: facts, episodios, compromisos, continuidad |
+
+## Arquitectura
 
 ```
 make run
 ├── Docker (Qdrant + NebulaGraph)
-├── FastAPI :8000 (REST API + Swagger)
-└── Streamlit :8501 (Interactive UI)
+├── FastAPI :8000 (REST API)
+└── Streamlit :8501 (UI)
        │
        ▼
-  ┌─────────┬──────────┬──────────┐
-  │ Upload  │  Graph    │  Query   │
-  │ Docs    │  Explorer │  & Chat  │
-  └────┬────┴────┬──────┴────┬─────┘
-       └─────────┼───────────┘
-                 ▼
-            FastAPI API
-                 │
-     ┌───────────┼───────────┐
-     ▼           ▼           ▼
-  Qdrant     NebulaGraph  OpenRouter
-  (vectors)  (graph)      (LLM+Emb)
+   ┌─────────┬──────────┬──────────┐
+   │ Upload  │  Graph   │  Query  │
+   └────┬────┴────┬──────┴────┬─────┘
+        └─────────┼───────────┘
+                  ▼
+             FastAPI
+                  │
+      ┌───────────┼───────────┐
+      ▼           ▼           ▼
+   Qdrant     NebulaGraph   OpenRouter
+   (vectors)  (graph)       (LLM+Emb)
+      │
+      ▼
+   Google ADK
+   (agents)
 ```
 
 ## Quick Start
@@ -31,185 +41,123 @@ make run
 
 - Docker & Docker Compose
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/) package manager
+- [uv](https://docs.astral.sh/uv/)
 
-### 1. Clone and configure
+### 1. Clone y configurar
 
 ```bash
 git clone https://github.com/Mortiz98/graphrag-poc.git
 cd graphrag-poc
 cp .env.example .env
-# Edit .env and add your OpenRouter API key
+# Edit .env: agregar OPENROUTER_API_KEY o GEMINI_API_KEY
 ```
 
-### 2. Install dependencies
+### 2. Instalar
 
 ```bash
 uv sync
 ```
 
-### 3. Start everything
+### 3. Iniciar
 
 ```bash
 make run
 ```
 
-This starts Docker, initializes NebulaGraph schema, launches the API server, and opens the Streamlit UI.
-
 - **Streamlit UI**: http://localhost:8501
-- **API docs (Swagger)**: http://localhost:8000/docs
+- **API docs**: http://localhost:8000/docs
 
-### 4. Load sample data
-
-Click **"Seed Sample Data"** on the Upload page, or run:
+### 4. Cargar datos de prueba
 
 ```bash
 make seed
 ```
 
-## What You Can Do
-
-### Upload Documents (Upload page)
-
-Drag-and-drop PDF, TXT, or Markdown files. The system will:
-1. Split documents into chunks
-2. Extract entity-relation triplets via LLM
-3. Store entities and relationships in NebulaGraph
-4. Embed triplets and store in Qdrant
-
-### Explore the Graph (Graph page)
-
-Interactive visualization of the knowledge graph:
-- Filter by entity type, relation type, or minimum connections
-- Click nodes to inspect entity details and connections
-- View 1-hop neighborhoods around any entity
-- Switch layouts (force-directed, hierarchical, circular)
-
-### Ask Questions (Query page)
-
-Chat interface with streaming support:
-- Toggle streaming to see answers generate token-by-token
-- Each answer includes confidence score, sources, and entities found
-- Chat history persists within the session
-
-### Manage Documents (Documents page)
-
-List, inspect, and delete ingested documents with one click.
-
 ## API Endpoints
 
-| Method | Endpoint | Description |
+| Method | Endpoint | Descripción |
 |--------|----------|-------------|
-| `GET` | `/api/v1/health` | Health check for all services |
-| `POST` | `/api/v1/ingest` | Upload and process a document (PDF/TXT/MD) |
-| `POST` | `/api/v1/seed` | Ingest sample data |
-| `POST` | `/api/v1/query` | Ask a question (sync) |
-| `POST` | `/api/v1/query/stream` | Ask a question (streaming SSE) |
-| `GET` | `/api/v1/documents` | List ingested documents |
-| `DELETE` | `/api/v1/documents/{filename}` | Delete a document and its data |
-| `GET` | `/api/v1/graph/stats` | Knowledge graph statistics |
-| `GET` | `/api/v1/graph/entities` | List all entities with types and degrees |
-| `GET` | `/api/v1/graph/edges` | List all edges (relationships) |
-| `GET` | `/api/v1/graph/subgraph` | N-hop neighborhood of an entity |
-| `GET` | `/api/v1/graph/filters` | Available filter values |
+| `GET` | `/api/v1/health` | Health check |
+| `POST` | `/api/v1/ingest` | Subir documento (PDF/TXT/MD) |
+| `POST` | `/api/v1/seed` | Cargar sample.txt |
+| `POST` | `/api/v1/query` | Consulta sync |
+| `POST` | `/api/v1/query/stream` | Consulta streaming (SSE) |
+| `GET` | `/api/v1/documents` | Listar documentos |
+| `DELETE` | `/api/v1/documents/{filename}` | Eliminar documento |
+| `GET` | `/api/v1/graph/*` | Endpoints de grafo |
+| `GET` | `/api/v1/traces/*` | Retrieval traces |
+| `POST` | `/api/v1/agents/support/query` | Agente de soporte (ADK) |
+| `POST` | `/api/v1/agents/am/query` | Agente Account Manager (ADK) |
 
-### Examples
+## Fases de Desarrollo
 
-**Upload a document:**
+| Fase | Estado | Descripción |
+|------|--------|-------------|
+| 0 | ✅ | Plataforma base ADK + retrieval + evals |
+| 1A | 🔄 | MVP Soporte (grounded responses) |
+| 1B | ⏳ | MVP Account Manager (continuity) |
+| 2 | ⏳ | Sparse + hybrid + reranking |
+| 3A/3B | ⏳ | Grafos de dominio y temporal |
+| 4-5 | ⏳ | Experimentos y escalado |
 
-```bash
-curl -X POST http://localhost:8000/api/v1/ingest \
-  -F "file=@document.txt"
-```
+## Cómo Funciona
 
-**Ask a question:**
+### Ingestión
 
-```bash
-curl -X POST http://localhost:8000/api/v1/query \
-  -H "Content-Type: application/json" \
-  -d '{"question": "Who created Python?", "top_k": 5}'
-```
-
-**Check graph stats:**
-
-```bash
-curl http://localhost:8000/api/v1/graph/stats
-```
-
-## How It Works
-
-### Ingestion Pipeline
-
-1. **Load** — PyPDFLoader (PDF), TextLoader (TXT/MD)
+1. **Load** — PDF/TXT/MD
 2. **Chunk** — RecursiveCharacterTextSplitter (1000 chars, 200 overlap)
-3. **Extract** — LLM extracts (subject, predicate, object) triplets from each chunk
-4. **Store graph** — Entities and relationships stored in NebulaGraph
-5. **Store vectors** — Each triplet embedded and stored in Qdrant with metadata
+3. **Extract** — LLM extrae tripletas (sujeto → predicado → objeto)
+4. **Store graph** — Entidades y relaciones en NebulaGraph
+5. **Store vectors** — Tripletas embeddas en Qdrant
 
-### Query Pipeline
+### Query
 
-1. **Embed question** — Convert question to vector
-2. **Vector search** — Qdrant finds top-K semantically similar triplets
-3. **Graph traversal** — NebulaGraph expands context via bidirectional relationships
-4. **Fuse contexts** — Deduplicate and merge vector + graph results
-5. **Generate answer** — LLM produces answer using structured context
-6. **Confidence score** — 70% vector similarity + 30% coverage factor
+1. **Embed question** → vector
+2. **Dense search** — Qdrant top-K
+3. **Graph expansion** — NebulaGraph expande contexto
+4. **Fuse** — Deduplicar resultados
+5. **Generate** — LLM produce respuesta
 
-## Configuration
+## Configuración (.env)
 
-All settings are in `.env` (see `.env.example`):
-
-| Variable | Default | Description |
+| Variable | Default | Descripción |
 |----------|---------|-------------|
-| `OPENROUTER_API_KEY` | — | Your OpenRouter API key |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
-| `OPENROUTER_LLM_MODEL` | `openai/gpt-4o-mini` | LLM model for extraction and QA |
-| `OPENROUTER_EMBEDDING_MODEL` | `openai/text-embedding-3-small` | Embedding model (1536d) |
-| `QDRANT_HOST` | `localhost` | Qdrant host |
-| `QDRANT_PORT` | `6333` | Qdrant REST port |
-| `NEBULA_HOST` | `localhost` | NebulaGraph host |
-| `NEBULA_PORT` | `9669` | NebulaGraph graphd port |
-| `NEBULA_SPACE` | `graphrag` | NebulaGraph space name |
+| `OPENROUTER_API_KEY` | — | OpenRouter key |
+| `GEMINI_API_KEY` | — | Google Gemini key (opcional) |
+| `OPENROUTER_LLM_MODEL` | `openai/gpt-4o-mini` | LLM |
+| `OPENROUTER_EMBEDDING_MODEL` | `text-embedding-3-small` | Embeddings (1536d) |
+| `QDRANT_HOST` | `localhost` | Qdrant |
+| `NEBULA_HOST` | `localhost` | NebulaGraph |
+| `NEBULA_SPACE` | `graphrag` | Space name |
 
-## Project Structure
+## Proyecto
 
 ```
 graphrag-poc/
-├── Makefile                     # run, stop, clean, test, seed, init
-├── docker-compose.yml           # Qdrant + NebulaGraph
-├── config/nebula/               # NebulaGraph configs
+├── Makefile
+├── docker-compose.yml
 ├── app/
-│   ├── main.py                  # FastAPI app
-│   ├── config.py                # Pydantic settings
-│   ├── api/routes/              # Endpoint handlers
-│   ├── core/                    # LLM, embeddings, graph, vectorstore
-│   ├── pipelines/               # Ingestion + query pipelines
-│   ├── models/                  # Pydantic schemas
-│   └── prompts/                 # LLM prompts
-├── ui/
-│   ├── app.py                   # Streamlit entrypoint
-│   ├── pages/                   # Upload, Graph, Query, Documents
-│   └── components/              # api_client, sidebar, graph_renderer
-├── tests/                       # 126 unit + integration tests
-├── scripts/
-│   ├── init_nebula.py           # Initialize NebulaGraph schema
-│   └── seed.py                  # Load sample data
-└── docs/
-    ├── PRD.md                   # Original product requirements
-    └── PRD-STREAMLIT.md         # Streamlit UI requirements
+│   ├── main.py
+│   ├── config.py
+│   ├── agents/          # Google ADK agents
+│   ├── api/routes/
+│   ├── core/           # LLM, embeddings, graph, vectorstore, retrieval
+│   ├── pipelines/       # ingestion, query, consolidation
+│   └── models/
+├── evals/              # métricas y truth sets
+├── ui/                 # Streamlit pages
+└── tests/              # 199 tests
 ```
 
-## Running Tests
+## Tests
 
 ```bash
 make test
+# o: uv run pytest tests/ -v
 ```
 
-Unit tests run with mocks (no Docker needed). Integration tests require Docker services and an API key.
-
-## Stopping Services
+## Evaluación
 
 ```bash
-make stop        # stop Docker
-make clean       # stop Docker + remove all data volumes
+python -c "from evals.runner import run_retrieval_eval; print(run_retrieval_eval('evals/truth_sets/support_qa.jsonl'))"
 ```
