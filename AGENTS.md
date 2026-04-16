@@ -66,7 +66,7 @@ ui/
 ```
 
 ## Testing
-- 109 tests pass, 2 skipped (seed tests require services)
+- 126 tests pass, 2 skipped (seed tests require services)
 - Unit tests use mocks, no Docker needed
 - Integration tests require Docker + API key
 
