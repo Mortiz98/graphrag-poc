@@ -37,25 +37,52 @@ if prompt := st.chat_input("Ask a question..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
+        conf = 0.5
+        sources = []
+        entities = []
+        full_response = ""
+
         if use_streaming:
             try:
-                full_response = ""
                 response_placeholder = st.empty()
 
                 with st.spinner("Generating response..."):
-                    for token in client.query_stream(prompt, top_k=top_k):
-                        full_response += token
-                        response_placeholder.markdown(full_response + "▌")
+                    for event in client.query_stream(prompt, top_k=top_k):
+                        if event.get("type") == "metadata":
+                            # Extract metadata from first event
+                            conf = event.get("confidence", 0.5)
+                            sources = event.get("sources", [])
+                            entities = event.get("entities", [])
+                        elif event.get("type") == "token":
+                            full_response += event.get("content", "")
+                            response_placeholder.markdown(full_response + "▌")
+                        elif event.get("type") == "done":
+                            break
 
                 response_placeholder.markdown(full_response)
-                conf = 0.5
-                sources = []
-                entities = []
+
+                # Display metadata
+                color = "green" if conf > 0.7 else "orange" if conf > 0.4 else "red"
+                st.markdown(f"Confidence: :{color}[{conf:.0%}]")
+
+                if sources:
+                    with st.expander("Sources"):
+                        for src in sources:
+                            st.markdown(f"**{src.get('document', '')}** (chunk `{src.get('chunk_id', '')[:8]}...`)")
+                            for t in src.get("triplets", []):
+                                st.markdown(f"  - {t['subject']} → {t['predicate']} → {t['object']}")
+
+                if entities:
+                    with st.expander("Entities found"):
+                        st.markdown(", ".join(entities))
 
             except Exception as e:
                 st.error(f"Query failed: {e}")
                 st.toast(f"Error: {e}", icon="❌")
                 full_response = f"Error: {e}"
+                conf = 0.5
+                sources = []
+                entities = []
         else:
             try:
                 with st.spinner("Thinking..."):
@@ -85,14 +112,17 @@ if prompt := st.chat_input("Ask a question..."):
                 st.error(f"Query failed: {e}")
                 st.toast(f"Error: {e}", icon="❌")
                 full_response = f"Error: {e}"
+                conf = 0.5
+                sources = []
+                entities = []
 
         st.session_state.chat_history.append(
             {
                 "role": "assistant",
                 "content": full_response,
-                "confidence": conf if "conf" in locals() else 0.5,
-                "sources": sources if "sources" in locals() else [],
-                "entities": entities if "entities" in locals() else [],
+                "confidence": conf,
+                "sources": sources,
+                "entities": entities,
             }
         )
 

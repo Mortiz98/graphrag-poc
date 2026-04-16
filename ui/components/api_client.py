@@ -106,9 +106,20 @@ class ApiClient:
                 status=data["status"],
             )
 
-    def query(self, question: str, top_k: int = 5) -> QueryResult:
+    def query(
+        self,
+        question: str,
+        top_k: int = 5,
+        filters: dict | None = None,
+        min_score: float = 0.0,
+    ) -> QueryResult:
         with self._client() as c:
-            resp = c.post("/query", json={"question": question, "top_k": top_k})
+            payload = {"question": question, "top_k": top_k}
+            if filters:
+                payload["filters"] = filters
+            if min_score > 0:
+                payload["min_score"] = min_score
+            resp = c.post("/query", json=payload)
             resp.raise_for_status()
             data = resp.json()
             return QueryResult(
@@ -118,17 +129,41 @@ class ApiClient:
                 confidence=data["confidence"],
             )
 
-    def query_stream(self, question: str, top_k: int = 5):
+    def query_stream(
+        self,
+        question: str,
+        top_k: int = 5,
+        filters: dict | None = None,
+        min_score: float = 0.0,
+    ):
+        """Stream query response with structured events.
+
+        Yields:
+            dict: Events with 'type' field ('metadata', 'token', or 'done')
+        """
+        import json
+
         with self._client() as c:
-            with c.stream("POST", "/query/stream", json={"question": question, "top_k": top_k}) as resp:
+            payload = {"question": question, "top_k": top_k}
+            if filters:
+                payload["filters"] = filters
+            if min_score > 0:
+                payload["min_score"] = min_score
+            with c.stream("POST", "/query/stream", json=payload) as resp:
                 resp.raise_for_status()
                 for line in resp.iter_lines():
-                    if line:
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
+                    if line and line.startswith("data: "):
+                        data_str = line[6:]
+                        try:
+                            event = json.loads(data_str)
+                            yield event
+                            if event.get("type") == "done":
                                 break
-                            yield data
+                        except json.JSONDecodeError:
+                            # Fallback for legacy format (plain text tokens)
+                            if data_str == "[DONE]":
+                                break
+                            yield {"type": "token", "content": data_str}
 
     def list_documents(self) -> list[DocumentInfo]:
         with self._client() as c:

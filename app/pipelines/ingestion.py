@@ -2,6 +2,7 @@
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -148,6 +149,10 @@ def store_in_vectorstore(
     ensure_collection_exists(client, settings.qdrant_collection_name)
     embeddings = get_embeddings()
 
+    # Generate batch timestamp for provenance
+    batch_timestamp = datetime.now(timezone.utc).isoformat()
+    ingestion_batch_id = str(uuid4())[:8]
+
     all_texts = []
     all_payloads = []
     all_ids = []
@@ -168,8 +173,13 @@ def store_in_vectorstore(
                     "object": t.object,
                     "subject_id": sub_vid,
                     "object_id": obj_vid,
+                    "subject_type": t.subject_type,
+                    "object_type": t.object_type,
                     "chunk_id": chunk.metadata.get("chunk_id", ""),
+                    "chunk_index": chunk.metadata.get("chunk_index", 0),
                     "source_doc": source_file,
+                    "created_at": batch_timestamp,
+                    "ingestion_batch": ingestion_batch_id,
                 }
             )
 

@@ -1,8 +1,16 @@
+import json
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.models.schemas import QueryRequest, QueryResponse
-from app.pipelines.query import _fuse_context, search_similar_triplets, stream_answer, traverse_graph
+from app.models.schemas import QueryRequest, QueryResponse, SourceInfo, SourceTriplet
+from app.pipelines.query import (
+    _compute_confidence,
+    _fuse_context,
+    search_similar_triplets,
+    stream_answer,
+    traverse_graph,
+)
 from app.pipelines.query import query as query_pipeline
 
 router = APIRouter(prefix="/api/v1", tags=["query"])
@@ -22,7 +30,12 @@ router = APIRouter(prefix="/api/v1", tags=["query"])
 )
 async def query_endpoint(request: QueryRequest):
     try:
-        return query_pipeline(request.question, request.top_k)
+        return query_pipeline(
+            question=request.question,
+            top_k=request.top_k,
+            min_score=request.min_score,
+            filters=request.filters,
+        )
     except Exception as e:
         raise HTTPException(
             status_code=503,
@@ -33,32 +46,74 @@ async def query_endpoint(request: QueryRequest):
 @router.post(
     "/query/stream",
     summary="Ask a question with streaming response",
-    description="Same as /query but streams the LLM response token-by-token using SSE.",
+    description="Same as /query but streams the LLM response token-by-token using SSE. "
+    "Sends metadata first, then tokens, then DONE signal.",
     responses={
-        200: {"description": "Streaming response"},
+        200: {"description": "Streaming response with structured events"},
         503: {"description": "Backend service unavailable"},
     },
 )
 async def query_stream_endpoint(request: QueryRequest):
     try:
-        vector_triplets = search_similar_triplets(request.question, request.top_k)
-
-        entity_ids = list(
-            {t["subject_id"] for t in vector_triplets if t.get("subject_id")}
-            | {t["object_id"] for t in vector_triplets if t.get("object_id")}
+        # Perform retrieval to get metadata
+        vector_results = search_similar_triplets(
+            request.question,
+            top_k=request.top_k,
+            min_score=request.min_score,
+            filters=request.filters,
         )
 
-        graph_triplets = traverse_graph(entity_ids, hop_depth=1)
+        entity_ids = list(
+            {r.subject_id for r in vector_results if r.subject_id}
+            | {r.object_id for r in vector_results if r.object_id}
+        )
 
-        context, _ = _fuse_context(vector_triplets, graph_triplets)
+        graph_results = traverse_graph(entity_ids, hop_depth=1)
+
+        context, fused_results = _fuse_context(vector_results, graph_results)
 
         if not context.strip():
             context = "No relevant context found."
 
+        # Prepare metadata
+        entities_found = list(
+            {r.subject for r in fused_results if r.subject} | {r.object for r in fused_results if r.object}
+        )
+
+        confidence = _compute_confidence(vector_results, len(fused_results))
+
+        # Build sources using Pydantic models for type safety
+        sources_by_chunk: dict[str, SourceInfo] = {}
+        for r in vector_results:
+            chunk_id = r.chunk_id or "unknown"
+            if chunk_id not in sources_by_chunk:
+                sources_by_chunk[chunk_id] = SourceInfo(
+                    chunk_id=chunk_id,
+                    document=r.source_doc,
+                    triplets=[],
+                )
+            sources_by_chunk[chunk_id].triplets.append(
+                SourceTriplet(subject=r.subject, predicate=r.predicate, object=r.object)
+            )
+
+        metadata = {
+            "type": "metadata",
+            "confidence": confidence,
+            "entities": entities_found,
+            "sources": [s.model_dump() for s in sources_by_chunk.values()],
+        }
+
         async def event_stream():
+            # Send metadata first
+            yield f"data: {json.dumps(metadata)}\n\n"
+
+            # Stream tokens
             for token in stream_answer(request.question, context):
-                yield f"data: {token}\n\n"
-            yield "data: [DONE]\n\n"
+                token_event = {"type": "token", "content": token}
+                yield f"data: {json.dumps(token_event)}\n\n"
+
+            # Send completion signal
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:

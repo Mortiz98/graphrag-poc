@@ -30,6 +30,10 @@ class IngestResponse(BaseModel):
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, description="User question")
     top_k: int = Field(default=5, ge=1, le=20, description="Number of triplets to retrieve")
+    filters: dict | None = Field(default=None, description="Optional metadata filters (e.g., source_doc, entity_type)")
+    min_score: float = Field(
+        default=0.0, ge=0.0, le=1.0, description="Minimum similarity score threshold for vector search"
+    )
 
 
 class SourceTriplet(BaseModel):
