@@ -79,7 +79,7 @@ def get_unique_source_docs(
     collection_name: str,
     batch_size: int = 100,
 ) -> dict[str, dict]:
-    all_points = []
+    docs_by_name: dict[str, dict] = {}
     offset = None
     while True:
         results = client.scroll(
@@ -89,27 +89,26 @@ def get_unique_source_docs(
             with_payload=True,
             with_vectors=False,
         )
-        all_points.extend(results[0])
+        # Process batch immediately to avoid accumulating all points in memory
+        for point in results[0]:
+            source = point.payload.get("source_doc", "")
+            if not source:
+                continue
+            if source not in docs_by_name:
+                docs_by_name[source] = {
+                    "id": point.id if isinstance(point.id, str) else str(point.id),
+                    "filename": source,
+                    "triplets_count": 0,
+                    "chunk_ids": set(),
+                }
+            docs_by_name[source]["triplets_count"] += 1
+            chunk_id = point.payload.get("chunk_id", "")
+            if chunk_id:
+                docs_by_name[source]["chunk_ids"].add(chunk_id)
+
         if not results[1]:
             break
         offset = results[1]
-
-    docs_by_name: dict[str, dict] = {}
-    for point in all_points:
-        source = point.payload.get("source_doc", "")
-        if not source:
-            continue
-        if source not in docs_by_name:
-            docs_by_name[source] = {
-                "id": point.id if isinstance(point.id, str) else str(point.id),
-                "filename": source,
-                "triplets_count": 0,
-                "chunk_ids": set(),
-            }
-        docs_by_name[source]["triplets_count"] += 1
-        chunk_id = point.payload.get("chunk_id", "")
-        if chunk_id:
-            docs_by_name[source]["chunk_ids"].add(chunk_id)
 
     return docs_by_name
 
