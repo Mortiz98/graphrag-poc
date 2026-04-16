@@ -7,7 +7,7 @@ from app.core.vectorstore import (
     get_unique_source_docs,
     scroll_by_source_doc,
 )
-from app.models.graph_schema import SPACE_NAME
+from app.models.graph_schema import SPACE_NAME, escape_ngql
 from app.models.schemas import DocumentInfo, GraphStats
 
 router = APIRouter(prefix="/api/v1", tags=["documents"])
@@ -87,7 +87,7 @@ async def delete_document(filename: str):
         with get_nebula_session() as session:
             session.execute(f"USE {SPACE_NAME}")
             for entity_id in entity_ids:
-                session.execute(f'DELETE VERTEX "{entity_id}" WITH EDGE')
+                session.execute(f'DELETE VERTEX "{escape_ngql(entity_id)}" WITH EDGE')
     except Exception as e:
         raise HTTPException(
             status_code=503,

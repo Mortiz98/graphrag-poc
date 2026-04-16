@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from app.config import get_settings
 from app.core.graph import get_nebula_session
 from app.core.vectorstore import get_qdrant_client
-from app.models.graph_schema import EDGE_RELATED_TO, SPACE_NAME
+from app.models.graph_schema import EDGE_RELATED_TO, SPACE_NAME, escape_ngql
 
 router = APIRouter(prefix="/api/v1", tags=["graph"])
 
@@ -138,16 +138,17 @@ def _load_edges_by_go(session, vid: str, direction: str = "out") -> list[dict]:
     direction: 'out' or 'in'
     Returns list of {source_vid, target_vid, source_name, target_name, relation}
     """
+    safe_vid = escape_ngql(vid)
     if direction == "out":
         query = (
-            f'GO FROM "{vid}" OVER {EDGE_RELATED_TO} '
+            f'GO FROM "{safe_vid}" OVER {EDGE_RELATED_TO} '
             f"YIELD {EDGE_RELATED_TO}._src AS src, "
             f"{EDGE_RELATED_TO}._dst AS dst, "
             f"{EDGE_RELATED_TO}.relation AS rel"
         )
     else:
         query = (
-            f'GO FROM "{vid}" OVER {EDGE_RELATED_TO} REVERSELY '
+            f'GO FROM "{safe_vid}" OVER {EDGE_RELATED_TO} REVERSELY '
             f"YIELD {EDGE_RELATED_TO}._src AS src, "
             f"{EDGE_RELATED_TO}._dst AS dst, "
             f"{EDGE_RELATED_TO}.relation AS rel"
@@ -180,7 +181,8 @@ def _load_edges_by_go(session, vid: str, direction: str = "out") -> list[dict]:
 
 def _fetch_vertex_name(session, vid: str) -> tuple[str, str]:
     """Fetch entity name and type for a given VID using MATCH."""
-    result = session.execute(f'MATCH (n) WHERE id(n) == "{vid}" RETURN n LIMIT 1')
+    safe_vid = escape_ngql(vid)
+    result = session.execute(f'MATCH (n) WHERE id(n) == "{safe_vid}" RETURN n LIMIT 1')
     if result.is_succeeded() and result.rows():
         extracted = _extract_vertex(result.rows()[0].values[0])
         if extracted:

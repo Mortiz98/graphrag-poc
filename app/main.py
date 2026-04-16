@@ -7,6 +7,7 @@ from app.api.routes.graph import router as graph_router
 from app.api.routes.health import router as health_router
 from app.api.routes.ingest import router as ingest_router
 from app.api.routes.query import router as query_router
+from app.config import get_settings
 
 structlog.configure(
     processors=[
@@ -37,6 +38,14 @@ Knowledge graph + vector search hybrid RAG system.
     """,
     version="0.1.0",
 )
+
+
+@app.on_event("startup")
+async def validate_configuration():
+    """Validate critical configuration on startup."""
+    settings = get_settings()
+    settings.validate_api_key()
+
 
 app.add_middleware(
     CORSMiddleware,

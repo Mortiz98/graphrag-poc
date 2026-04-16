@@ -190,7 +190,7 @@ graphrag-poc/
 │   ├── app.py                   # Streamlit entrypoint
 │   ├── pages/                   # Upload, Graph, Query, Documents
 │   └── components/              # api_client, sidebar, graph_renderer
-├── tests/                       # 109 unit + integration tests
+├── tests/                       # 126 unit + integration tests
 ├── scripts/
 │   ├── init_nebula.py           # Initialize NebulaGraph schema
 │   └── seed.py                  # Load sample data

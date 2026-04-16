@@ -26,6 +26,20 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
+    @property
+    def is_llm_configured(self) -> bool:
+        """Check if the API key is properly configured."""
+        return bool(self.openrouter_api_key and self.openrouter_api_key != "your-openrouter-api-key-here")
+
+    def validate_api_key(self) -> None:
+        """Validate API key configuration and raise clear error if missing."""
+        if not self.is_llm_configured:
+            raise ValueError(
+                "OPENROUTER_API_KEY not configured. "
+                "Add your API key to the .env file. "
+                "Get one at https://openrouter.ai/keys"
+            )
+
 
 @lru_cache
 def get_settings() -> Settings:

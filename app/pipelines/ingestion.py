@@ -18,6 +18,7 @@ from app.models.graph_schema import (
     EDGE_RELATED_TO,
     SPACE_NAME,
     TAG_ENTITY,
+    escape_ngql,
 )
 from app.models.schemas import Triplet
 from app.pipelines.loaders import load_document
@@ -112,11 +113,11 @@ def store_in_graph(
                 vertex_id_map[t.subject] = sub_vid
                 vertex_id_map[t.object] = obj_vid
 
-                sub_type_escaped = t.subject_type.replace("'", "\\'")
-                obj_type_escaped = t.object_type.replace("'", "\\'")
-                sub_name_escaped = t.subject.replace("'", "\\'")
-                obj_name_escaped = t.object.replace("'", "\\'")
-                rel_escaped = t.predicate.replace("'", "\\'")
+                sub_name_escaped = escape_ngql(t.subject)
+                obj_name_escaped = escape_ngql(t.object)
+                sub_type_escaped = escape_ngql(t.subject_type)
+                obj_type_escaped = escape_ngql(t.object_type)
+                rel_escaped = escape_ngql(t.predicate)
 
                 session.execute(
                     f"INSERT VERTEX {TAG_ENTITY} (name, type, description) VALUES "

@@ -15,7 +15,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
 
-SAMPLE_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "test_data"
+SAMPLE_DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "test_data"
 
 
 @router.post(

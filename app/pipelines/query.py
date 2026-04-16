@@ -6,7 +6,7 @@ from app.core.embeddings import get_embeddings
 from app.core.graph import get_nebula_session
 from app.core.llm import get_llm
 from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
-from app.models.graph_schema import EDGE_RELATED_TO, SPACE_NAME
+from app.models.graph_schema import EDGE_RELATED_TO, SPACE_NAME, escape_ngql
 from app.models.schemas import QueryResponse, SourceInfo, SourceTriplet
 from app.prompts.qa import QA_SYSTEM_PROMPT, QA_USER_PROMPT
 
@@ -56,17 +56,18 @@ def traverse_graph(entity_ids: list[str], hop_depth: int = 1) -> list[dict]:
         session.execute(f"USE {SPACE_NAME}")
 
         for entity_id in entity_ids:
+            safe_id = escape_ngql(entity_id)
             for direction in ["out", "in"]:
                 if direction == "out":
                     query = (
-                        f'GO FROM "{entity_id}" OVER {EDGE_RELATED_TO} '
+                        f'GO FROM "{safe_id}" OVER {EDGE_RELATED_TO} '
                         f"YIELD {EDGE_RELATED_TO}._src AS src, "
                         f"{EDGE_RELATED_TO}._dst AS dst, "
                         f"{EDGE_RELATED_TO}.relation AS relation"
                     )
                 else:
                     query = (
-                        f'GO FROM "{entity_id}" OVER {EDGE_RELATED_TO} REVERSELY '
+                        f'GO FROM "{safe_id}" OVER {EDGE_RELATED_TO} REVERSELY '
                         f"YIELD {EDGE_RELATED_TO}._src AS src, "
                         f"{EDGE_RELATED_TO}._dst AS dst, "
                         f"{EDGE_RELATED_TO}.relation AS relation"
@@ -103,7 +104,7 @@ def traverse_graph(entity_ids: list[str], hop_depth: int = 1) -> list[dict]:
                     except Exception:
                         continue
 
-            entity_names_query = f'FETCH PROP ON * "{entity_id}" YIELD vertex AS v'
+            entity_names_query = f'FETCH PROP ON * "{safe_id}" YIELD vertex AS v'
             result = session.execute(entity_names_query)
             if not result.is_succeeded():
                 continue
