@@ -2,10 +2,10 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.api.exceptions import UnsupportedFileTypeError
-from app.models.schemas import IngestResponse
+from app.models.schemas import CaseMetadata, FactMetadata, IngestResponse
 from app.pipelines.ingestion import ingest_document
 
 router = APIRouter(prefix="/api/v1", tags=["ingest"])
@@ -23,14 +23,33 @@ SAMPLE_DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "test_d
     response_model=IngestResponse,
     summary="Upload and process a document",
     description="Upload a PDF, TXT, or Markdown file. The document will be chunked, "
-    "triplets extracted via LLM, and stored in both NebulaGraph and Qdrant.",
+    "triplets extracted via LLM, and stored in both NebulaGraph and Qdrant. "
+    "Supports system routing ('support' or 'am') and domain-specific metadata.",
     responses={
         200: {"description": "Document processed successfully"},
         400: {"description": "Unsupported file type"},
         503: {"description": "Backend service unavailable"},
     },
 )
-async def ingest_file(file: UploadFile = File(...)):
+async def ingest_file(
+    file: UploadFile = File(...),
+    system: str = Form("support"),
+    tenant_id: str | None = Form(None),
+    case_id: str | None = Form(None),
+    product: str | None = Form(None),
+    version: str | None = Form(None),
+    severity: str | None = Form(None),
+    channel: str | None = Form(None),
+    team: str | None = Form(None),
+    status: str | None = Form(None),
+    account_id: str | None = Form(None),
+    fact_type: str | None = Form(None),
+    valid_from: str | None = Form(None),
+    valid_to: str | None = Form(None),
+    supersedes: str | None = Form(None),
+    stakeholder: str | None = Form(None),
+    confidence: float | None = Form(None),
+):
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
@@ -38,13 +57,44 @@ async def ingest_file(file: UploadFile = File(...)):
     if suffix not in SUPPORTED_EXTENSIONS:
         raise UnsupportedFileTypeError(suffix)
 
+    case_metadata = None
+    if any([tenant_id, case_id, product, version, severity, channel, team, status]):
+        case_metadata = CaseMetadata(
+            tenant_id=tenant_id,
+            case_id=case_id,
+            product=product,
+            version=version,
+            severity=severity,
+            channel=channel,
+            team=team,
+            status=status,
+        )
+
+    fact_metadata = None
+    if any([tenant_id, account_id, fact_type, valid_from, valid_to, supersedes, stakeholder, confidence]):
+        fact_metadata = FactMetadata(
+            tenant_id=tenant_id,
+            account_id=account_id,
+            fact_type=fact_type,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            supersedes=supersedes,
+            stakeholder=stakeholder,
+            confidence=confidence,
+        )
+
     tmp_dir = tempfile.mkdtemp()
     tmp_path = Path(tmp_dir) / file.filename
     try:
         with open(tmp_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        result = ingest_document(tmp_path)
+        result = ingest_document(
+            tmp_path,
+            system=system,
+            case_metadata=case_metadata,
+            fact_metadata=fact_metadata,
+        )
 
         return IngestResponse(
             filename=result["filename"],

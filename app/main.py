@@ -2,11 +2,14 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.agents import router as agents_router
+from app.api.routes.artifacts import router as artifacts_router
 from app.api.routes.documents import router as documents_router
 from app.api.routes.graph import router as graph_router
 from app.api.routes.health import router as health_router
 from app.api.routes.ingest import router as ingest_router
 from app.api.routes.query import router as query_router
+from app.api.routes.traces import router as traces_router
 from app.config import get_settings
 
 structlog.configure(
@@ -60,6 +63,9 @@ app.include_router(ingest_router)
 app.include_router(query_router)
 app.include_router(documents_router)
 app.include_router(graph_router)
+app.include_router(agents_router)
+app.include_router(traces_router)
+app.include_router(artifacts_router)
 
 
 def run_server() -> None:

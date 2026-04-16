@@ -4,8 +4,12 @@ This module provides a unified interface for searching across vector stores
 and knowledge graphs, with support for structured logging and extensibility.
 """
 
+import json
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
 
 from app.config import get_settings
 from app.core import logger
@@ -13,6 +17,9 @@ from app.core.embeddings import get_embeddings
 from app.core.graph import get_nebula_session
 from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
 from app.models.graph_schema import EDGE_RELATED_TO, SPACE_NAME, TAG_ENTITY, escape_ngql
+
+TRACES_DIR = Path("traces")
+TRACES_DIR.mkdir(exist_ok=True)
 
 
 @dataclass
@@ -30,6 +37,8 @@ class SearchResult:
     subject_type: str = ""
     object_type: str = ""
     metadata: dict = field(default_factory=dict)
+    retrieval_method: str = ""
+    scope: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -40,6 +49,33 @@ class RetrievalTrace:
     phase: str
     candidates: list[SearchResult]
     metadata: dict = field(default_factory=dict)
+    trace_id: str = ""
+    session_id: str = ""
+    timestamp: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "trace_id": self.trace_id,
+            "session_id": self.session_id,
+            "timestamp": self.timestamp,
+            "query": self.query[:200],
+            "phase": self.phase,
+            "candidate_count": len(self.candidates),
+            "top_scores": [c.score for c in self.candidates[:5]] if self.candidates else [],
+            "metadata": self.metadata,
+        }
+
+
+def persist_trace(trace: RetrievalTrace) -> None:
+    if not trace.trace_id:
+        return
+    try:
+        trace_file = TRACES_DIR / f"{trace.trace_id}.jsonl"
+        entry = trace.to_dict()
+        with open(trace_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        logger.warning("trace_persist_failed", error=str(e))
 
 
 class RetrievalEngine:
@@ -67,39 +103,31 @@ class RetrievalEngine:
             self._embeddings = get_embeddings()
         return self._embeddings
 
+    def _build_filter(self, filters: dict | None, scope: dict | None) -> object | None:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        conditions = []
+        if scope:
+            for key, value in scope.items():
+                conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+        if filters:
+            for key, value in filters.items():
+                conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+        return Filter(must=conditions) if conditions else None
+
     def search_dense(
         self,
         query: str,
         top_k: int = 5,
         min_score: float = 0.0,
         filters: dict | None = None,
+        scope: dict | None = None,
     ) -> list[SearchResult]:
-        """Search using dense vector similarity.
-
-        Args:
-            query: The search query text
-            top_k: Maximum number of results to return
-            min_score: Minimum similarity score threshold (0.0 = no filter)
-            filters: Optional metadata filters for Qdrant query
-
-        Returns:
-            List of SearchResult objects ordered by relevance
-        """
         client = self._get_vector_client()
         embeddings = self._get_embeddings()
 
         query_vector = embeddings.embed_query(query)
-
-        # Build Qdrant query filter from filters dict
-        query_filter = None
-        if filters:
-            from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-            conditions = []
-            for key, value in filters.items():
-                conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
-            if conditions:
-                query_filter = Filter(must=conditions)
+        query_filter = self._build_filter(filters, scope)
 
         results = client.query_points(
             collection_name=self.settings.qdrant_collection_name,
@@ -139,6 +167,8 @@ class RetrievalEngine:
                         "object_type",
                     ]
                 },
+                retrieval_method="dense",
+                scope=scope or {},
             )
             search_results.append(result)
 
@@ -148,9 +178,77 @@ class RetrievalEngine:
             results=len(search_results),
             min_score=min_score,
             filters=filters,
+            scope=scope,
             top_scores=[r.score for r in search_results[:3]],
         )
 
+        return search_results
+
+    def search_sparse(
+        self,
+        query: str,
+        top_k: int = 5,
+        scope: dict | None = None,
+        filters: dict | None = None,
+    ) -> list[SearchResult]:
+        logger.info("search_sparse_fallback_to_dense", query=query[:50])
+        return self.search_dense(query=query, top_k=top_k, filters=filters, scope=scope)
+
+    def search_hybrid(
+        self,
+        query: str,
+        top_k: int = 5,
+        scope: dict | None = None,
+        filters: dict | None = None,
+    ) -> list[SearchResult]:
+        logger.info("search_hybrid_fallback_to_dense", query=query[:50])
+        return self.search_dense(query=query, top_k=top_k, filters=filters, scope=scope)
+
+    def rerank(
+        self,
+        candidates: list[SearchResult],
+        query: str,
+    ) -> list[SearchResult]:
+        logger.info("rerank_noop_passthrough", query=query[:50], candidates=len(candidates))
+        return candidates
+
+    def get_supporting_chunks(self, ids: list[str]) -> list[SearchResult]:
+        if not ids:
+            return []
+        client = self._get_vector_client()
+
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        query_filter = Filter(must=[FieldCondition(key="chunk_id", match=MatchValue(value=id_)) for id_ in ids])
+
+        results = client.scroll(
+            collection_name=self.settings.qdrant_collection_name,
+            limit=len(ids) * 20,
+            with_payload=True,
+            with_vectors=False,
+            scroll_filter=query_filter,
+        )
+
+        search_results = []
+        for point in results[0]:
+            search_results.append(
+                SearchResult(
+                    subject=point.payload.get("subject", ""),
+                    predicate=point.payload.get("predicate", ""),
+                    object=point.payload.get("object", ""),
+                    score=1.0,
+                    source_doc=point.payload.get("source_doc", ""),
+                    chunk_id=point.payload.get("chunk_id", ""),
+                    subject_id=point.payload.get("subject_id", ""),
+                    object_id=point.payload.get("object_id", ""),
+                    subject_type=point.payload.get("subject_type", ""),
+                    object_type=point.payload.get("object_type", ""),
+                    metadata=point.payload,
+                    retrieval_method="chunk_lookup",
+                )
+            )
+
+        logger.info("supporting_chunks_retrieved", requested=len(ids), found=len(search_results))
         return search_results
 
     def expand_from_graph(
@@ -322,20 +420,19 @@ class RetrievalEngine:
         phase: str,
         candidates: list[SearchResult],
         metadata: dict | None = None,
+        trace_id: str = "",
+        session_id: str = "",
     ) -> None:
-        """Log a structured trace of the retrieval process.
-
-        Args:
-            query: The original query
-            phase: Current phase of retrieval (e.g., 'vector_search', 'graph_expansion')
-            candidates: List of candidates at this phase
-            metadata: Additional metadata to log
-        """
+        if not trace_id:
+            trace_id = str(uuid4())[:8]
         trace = RetrievalTrace(
             query=query,
             phase=phase,
             candidates=candidates,
             metadata=metadata or {},
+            trace_id=trace_id,
+            session_id=session_id,
+            timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
         logger.info(
@@ -345,7 +442,11 @@ class RetrievalEngine:
             candidate_count=len(trace.candidates),
             top_scores=[c.score for c in trace.candidates[:3]] if trace.candidates else [],
             metadata=trace.metadata,
+            trace_id=trace.trace_id,
+            session_id=trace.session_id,
         )
+
+        persist_trace(trace)
 
 
 _retrieval_engine: RetrievalEngine | None = None

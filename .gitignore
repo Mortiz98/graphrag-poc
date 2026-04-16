@@ -20,6 +20,8 @@ build/
 # Data
 data/
 uploads/
+traces/
+artifacts/
 
 # OS
 .DS_Store

@@ -14,7 +14,6 @@ from app.pipelines.query import (
 
 
 def make_search_result(**kwargs) -> SearchResult:
-    """Helper to create SearchResult with defaults."""
     defaults = {
         "subject": "",
         "predicate": "",
@@ -25,6 +24,8 @@ def make_search_result(**kwargs) -> SearchResult:
         "subject_id": "",
         "object_id": "",
         "metadata": {},
+        "retrieval_method": "",
+        "scope": {},
     }
     defaults.update(kwargs)
     return SearchResult(**defaults)

@@ -21,7 +21,7 @@ from app.models.graph_schema import (
     TAG_ENTITY,
     escape_ngql,
 )
-from app.models.schemas import Triplet
+from app.models.schemas import CaseMetadata, FactMetadata, Triplet
 from app.pipelines.loaders import load_document
 from app.prompts.extraction import EXTRACTION_SYSTEM_PROMPT, EXTRACTION_USER_PROMPT
 
@@ -141,6 +141,9 @@ def store_in_vectorstore(
     triplets_by_chunk: list[tuple[Document, list[Triplet]]],
     vertex_id_map: dict[str, str],
     source_file: str,
+    system: str = "support",
+    case_metadata: CaseMetadata | None = None,
+    fact_metadata: FactMetadata | None = None,
 ) -> int:
     from app.config import get_settings
 
@@ -149,9 +152,11 @@ def store_in_vectorstore(
     ensure_collection_exists(client, settings.qdrant_collection_name)
     embeddings = get_embeddings()
 
-    # Generate batch timestamp for provenance
     batch_timestamp = datetime.now(timezone.utc).isoformat()
     ingestion_batch_id = str(uuid4())[:8]
+
+    case_meta_dict = case_metadata.model_dump(exclude_none=True) if case_metadata else {}
+    fact_meta_dict = fact_metadata.model_dump(exclude_none=True) if fact_metadata else {}
 
     all_texts = []
     all_payloads = []
@@ -166,22 +171,28 @@ def store_in_vectorstore(
             point_id = str(uuid4())
             all_ids.append(point_id)
             all_texts.append(triplet_text)
-            all_payloads.append(
-                {
-                    "subject": t.subject,
-                    "predicate": t.predicate,
-                    "object": t.object,
-                    "subject_id": sub_vid,
-                    "object_id": obj_vid,
-                    "subject_type": t.subject_type,
-                    "object_type": t.object_type,
-                    "chunk_id": chunk.metadata.get("chunk_id", ""),
-                    "chunk_index": chunk.metadata.get("chunk_index", 0),
-                    "source_doc": source_file,
-                    "created_at": batch_timestamp,
-                    "ingestion_batch": ingestion_batch_id,
-                }
-            )
+            payload = {
+                "subject": t.subject,
+                "predicate": t.predicate,
+                "object": t.object,
+                "subject_id": sub_vid,
+                "object_id": obj_vid,
+                "subject_type": t.subject_type,
+                "object_type": t.object_type,
+                "chunk_id": chunk.metadata.get("chunk_id", ""),
+                "chunk_index": chunk.metadata.get("chunk_index", 0),
+                "source_doc": source_file,
+                "created_at": batch_timestamp,
+                "ingestion_batch": ingestion_batch_id,
+                "system": system,
+            }
+            if fact_meta_dict.get("account_id"):
+                payload["account_id"] = fact_meta_dict["account_id"]
+            if fact_meta_dict.get("tenant_id"):
+                payload["tenant_id"] = fact_meta_dict["tenant_id"]
+            payload.update(case_meta_dict)
+            payload.update(fact_meta_dict)
+            all_payloads.append(payload)
 
     if not all_texts:
         logger.warning("no_triplets_to_embed", source=source_file)
@@ -207,9 +218,14 @@ def store_in_vectorstore(
     return total_stored
 
 
-def ingest_document(file_path: Path) -> dict:
+def ingest_document(
+    file_path: Path,
+    system: str = "support",
+    case_metadata: CaseMetadata | None = None,
+    fact_metadata: FactMetadata | None = None,
+) -> dict:
     source_file = file_path.name
-    logger.info("ingestion_started", file=source_file)
+    logger.info("ingestion_started", file=source_file, system=system)
 
     documents = load_document(file_path)
     chunks = chunk_documents(documents, source_file)
@@ -228,7 +244,14 @@ def ingest_document(file_path: Path) -> dict:
         }
 
     vertex_id_map = store_in_graph(triplets_by_chunk, source_file)
-    vector_count = store_in_vectorstore(triplets_by_chunk, vertex_id_map, source_file)
+    vector_count = store_in_vectorstore(
+        triplets_by_chunk,
+        vertex_id_map,
+        source_file,
+        system=system,
+        case_metadata=case_metadata,
+        fact_metadata=fact_metadata,
+    )
 
     logger.info(
         "ingestion_completed",
@@ -236,6 +259,7 @@ def ingest_document(file_path: Path) -> dict:
         chunks=len(chunks),
         triplets=total_triplets,
         vectors=vector_count,
+        system=system,
     )
     return {
         "filename": source_file,

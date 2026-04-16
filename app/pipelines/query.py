@@ -12,18 +12,8 @@ def search_similar_triplets(
     top_k: int = 5,
     min_score: float = 0.0,
     filters: dict | None = None,
+    scope: dict | None = None,
 ) -> list[SearchResult]:
-    """Search for similar triplets using the retrieval engine.
-
-    Args:
-        question: The search query
-        top_k: Maximum number of results
-        min_score: Minimum similarity score threshold
-        filters: Optional metadata filters
-
-    Returns:
-        List of SearchResult objects
-    """
     engine = get_retrieval_engine()
 
     logger.info(
@@ -32,6 +22,7 @@ def search_similar_triplets(
         top_k=top_k,
         min_score=min_score,
         filters=filters,
+        scope=scope,
     )
 
     results = engine.search_dense(
@@ -39,13 +30,14 @@ def search_similar_triplets(
         top_k=top_k,
         min_score=min_score,
         filters=filters,
+        scope=scope,
     )
 
     engine.log_trace(
         query=question,
         phase="vector_search",
         candidates=results,
-        metadata={"top_k": top_k, "min_score": min_score, "filters": filters},
+        metadata={"top_k": top_k, "min_score": min_score, "filters": filters, "scope": scope},
     )
 
     return results
@@ -181,57 +173,40 @@ def query(
     top_k: int = 5,
     min_score: float = 0.0,
     filters: dict | None = None,
+    scope: dict | None = None,
 ) -> QueryResponse:
-    """Execute a complete query pipeline.
-
-    Args:
-        question: User question
-        top_k: Number of results to retrieve
-        min_score: Minimum similarity threshold
-        filters: Optional metadata filters
-
-    Returns:
-        QueryResponse with answer, sources, and metadata
-    """
     logger.info(
         "query_started",
         question=question[:50],
         top_k=top_k,
         min_score=min_score,
         filters=filters,
+        scope=scope,
     )
 
-    # Step 1: Vector search
     vector_results = search_similar_triplets(
         question,
         top_k=top_k,
         min_score=min_score,
         filters=filters,
+        scope=scope,
     )
 
-    # Step 2: Extract entity IDs for graph expansion
     entity_ids = list(
         {r.subject_id for r in vector_results if r.subject_id} | {r.object_id for r in vector_results if r.object_id}
     )
 
-    # Step 3: Graph traversal
     graph_results = traverse_graph(entity_ids, hop_depth=1)
 
-    # Step 4: Fuse results
     context, fused_results = _fuse_context(vector_results, graph_results)
 
-    # Step 5: Extract entities found
     entities_found = list(
         {r.subject for r in fused_results if r.subject} | {r.object for r in fused_results if r.object}
     )
 
-    # Step 6: Compute confidence
     confidence = _compute_confidence(vector_results, len(fused_results))
 
-    # Step 7: Generate answer
     answer = generate_answer(question, context)
-
-    # Step 8: Build sources from vector results (they have source info)
     sources_by_chunk: dict[str, SourceInfo] = {}
     for r in vector_results:
         chunk_id = r.chunk_id or "unknown"

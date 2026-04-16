@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     openrouter_llm_model: str = "openai/gpt-4o-mini"
     openrouter_embedding_model: str = "openai/text-embedding-3-small"
 
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_embedding_model: str = "gemini-embedding-exp-03-07"
+
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_grpc_port: int = 6334
@@ -28,17 +32,18 @@ class Settings(BaseSettings):
 
     @property
     def is_llm_configured(self) -> bool:
-        """Check if the API key is properly configured."""
-        return bool(self.openrouter_api_key and self.openrouter_api_key != "your-openrouter-api-key-here")
+        return bool(
+            (self.openrouter_api_key and self.openrouter_api_key != "your-openrouter-api-key-here")
+            or self.gemini_api_key
+        )
+
+    @property
+    def is_gemini_configured(self) -> bool:
+        return bool(self.gemini_api_key)
 
     def validate_api_key(self) -> None:
-        """Validate API key configuration and raise clear error if missing."""
         if not self.is_llm_configured:
-            raise ValueError(
-                "OPENROUTER_API_KEY not configured. "
-                "Add your API key to the .env file. "
-                "Get one at https://openrouter.ai/keys"
-            )
+            raise ValueError("No API key configured. Add OPENROUTER_API_KEY or GEMINI_API_KEY to the .env file.")
 
 
 @lru_cache

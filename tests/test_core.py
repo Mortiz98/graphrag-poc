@@ -12,13 +12,13 @@ from app.core.llm import get_llm
 
 class TestSettingsValidation:
     def test_empty_api_key_raises_error(self):
-        settings = Settings(openrouter_api_key="")
-        with pytest.raises(ValueError, match="OPENROUTER_API_KEY not configured"):
+        settings = Settings(openrouter_api_key="", gemini_api_key="")
+        with pytest.raises(ValueError, match="No API key configured"):
             settings.validate_api_key()
 
     def test_placeholder_api_key_raises_error(self):
-        settings = Settings(openrouter_api_key="your-openrouter-api-key-here")
-        with pytest.raises(ValueError, match="OPENROUTER_API_KEY not configured"):
+        settings = Settings(openrouter_api_key="your-openrouter-api-key-here", gemini_api_key="")
+        with pytest.raises(ValueError, match="No API key configured"):
             settings.validate_api_key()
 
     def test_valid_api_key_passes(self):
@@ -26,11 +26,11 @@ class TestSettingsValidation:
         settings.validate_api_key()  # Should not raise
 
     def test_is_llm_configured_false_when_empty(self):
-        settings = Settings(openrouter_api_key="")
+        settings = Settings(openrouter_api_key="", gemini_api_key="")
         assert settings.is_llm_configured is False
 
     def test_is_llm_configured_false_when_placeholder(self):
-        settings = Settings(openrouter_api_key="your-openrouter-api-key-here")
+        settings = Settings(openrouter_api_key="your-openrouter-api-key-here", gemini_api_key="")
         assert settings.is_llm_configured is False
 
     def test_is_llm_configured_true_when_valid(self):
