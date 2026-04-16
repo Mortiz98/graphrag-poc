@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Project
-GraphRAG PoC — Hybrid RAG system (Qdrant + NebulaGraph) with Streamlit UI for document ingestion, graph visualization, and Q&A.
+GraphRAG PoC — Hybrid RAG system (Qdrant + NebulaGraph + Google ADK) con FastAPI y Streamlit.
 
 ## Commands
 ```bash
@@ -15,13 +15,14 @@ make init           # init NebulaGraph schema
 
 ## Required order
 ```bash
-uv run ruff check app/ tests/ ui/ && uv run ruff format app/ tests/ ui/ && uv run pytest tests/ -v
+uv run ruff check app/ tests/ evals/ && uv run ruff format app/ tests/ evals/ && uv run pytest tests/ -v
 ```
 
 ## Environment
-- `.env` (gitignored): set `OPENROUTER_API_KEY`
-- Default model: `openai/gpt-4o-mini`
-- Qdrant collection: `triplets` (1536d cosine)
+- `.env` (gitignored): set `OPENROUTER_API_KEY` and/or `GEMINI_API_KEY`
+- Default LLM: `openai/gpt-4o-mini` (via OpenRouter) or `gemini-2.0-flash` (via Google ADK)
+- Default embeddings: `text-embedding-3-small` (1536d)
+- Qdrant collection: `triplets`
 - NebulaGraph space: `graphrag`
 
 ## Key gotchas
@@ -35,44 +36,45 @@ uv run ruff check app/ tests/ ui/ && uv run ruff format app/ tests/ ui/ && uv ru
 - Use `query_points()`, not `search()` (v1.17+)
 - Collection auto-created on first ingestion
 
+**Google ADK:**
+- Agents defined in `app/agents/`
+- Tools in `app/agents/tools/`
+- Model configured via `app/agents/base.py` — defaults to Gemini
+
 **Streamlit:**
 - Requires `PYTHONPATH=.` to import `ui.*` modules
-- Run from project root: `cd /home/mortiz/projects/graphrag-poc && PYTHONPATH=. uv run streamlit run ui/app.py`
+
+## Testing
+- 199 tests pass, 2 skipped (seed tests require services)
+- Unit tests use mocks, no Docker needed
+- Run evals: `python -c "from evals.runner import run_retrieval_eval; print(run_retrieval_eval('evals/truth_sets/support_qa.jsonl'))"`
+
+## PRD Phases
+- Fase 0: ✅ Complete — Platform base, ADK, retrieval abstraction, evaluation
+- Fase 1A: MVP Soporte — In progress
+- Fase 1B: MVP Account Manager — Pending
 
 ## API Endpoints
 ```
-/api/v1/ingest     - upload document
-/api/v1/seed       - load sample.txt
-/api/v1/query      - sync query
-/api/v1/query/stream - streaming query (SSE)
-/api/v1/documents  - list/delete
-/api/v1/graph/stats
-/api/v1/graph/entities
-/api/v1/graph/edges
-/api/v1/graph/subgraph?entity=X&hops=N
-/api/v1/graph/filters
+/api/v1/ingest           - upload document
+/api/v1/seed            - load sample.txt
+/api/v1/query            - sync query
+/api/v1/query/stream     - streaming query (SSE)
+/api/v1/documents       - list/delete
+/api/v1/health          - health check
+/api/v1/graph/*         - graph queries
+/api/v1/traces/*        - retrieval traces
+/api/v1/agents/*        - ADK agent endpoints
 ```
 
 ## Architecture
 ```
 app/
-  api/routes/    - FastAPI endpoints
-  core/         - LLM, embeddings, graph, vectorstore
-  pipelines/    - ingestion, query
-  models/       - Pydantic schemas
-ui/
-  pages/        - Streamlit multipage (Upload, Graph, Query, Documents)
-  components/   - api_client, sidebar, graph_renderer
+  agents/               - Google ADK agents (support, account_manager)
+  api/routes/          - FastAPI endpoints
+  core/                - LLM, embeddings, graph, vectorstore, retrieval
+  pipelines/           - ingestion, query, consolidation
+  models/              - Pydantic schemas
+evals/                  - evaluation metrics, truth sets, runner
+ui/                    - Streamlit pages and components
 ```
-
-## Testing
-- 126 tests pass, 2 skipped (seed tests require services)
-- Unit tests use mocks, no Docker needed
-- Integration tests require Docker + API key
-
-## Running
-```bash
-make run
-```
-- API: http://localhost:8000/docs
-- UI: http://localhost:8501
