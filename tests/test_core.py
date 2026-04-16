@@ -2,9 +2,40 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from app.config import Settings
 from app.core.embeddings import get_embeddings
 from app.core.graph import check_nebula_health, get_nebula_session, reset_pool
 from app.core.llm import get_llm
+
+
+class TestSettingsValidation:
+    def test_empty_api_key_raises_error(self):
+        settings = Settings(openrouter_api_key="")
+        with pytest.raises(ValueError, match="OPENROUTER_API_KEY not configured"):
+            settings.validate_api_key()
+
+    def test_placeholder_api_key_raises_error(self):
+        settings = Settings(openrouter_api_key="your-openrouter-api-key-here")
+        with pytest.raises(ValueError, match="OPENROUTER_API_KEY not configured"):
+            settings.validate_api_key()
+
+    def test_valid_api_key_passes(self):
+        settings = Settings(openrouter_api_key="sk-test-12345")
+        settings.validate_api_key()  # Should not raise
+
+    def test_is_llm_configured_false_when_empty(self):
+        settings = Settings(openrouter_api_key="")
+        assert settings.is_llm_configured is False
+
+    def test_is_llm_configured_false_when_placeholder(self):
+        settings = Settings(openrouter_api_key="your-openrouter-api-key-here")
+        assert settings.is_llm_configured is False
+
+    def test_is_llm_configured_true_when_valid(self):
+        settings = Settings(openrouter_api_key="sk-test-12345")
+        assert settings.is_llm_configured is True
 
 
 class TestGetLLM:
