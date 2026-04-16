@@ -3,7 +3,6 @@
 This module provides a simple interface to the ADK ArtifactService.
 """
 
-import json
 from pathlib import Path
 
 from google.adk.artifacts import InMemoryArtifactService
