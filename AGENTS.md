@@ -51,6 +51,10 @@ uv run ruff check app/ tests/ ui/ && uv run ruff format app/ tests/ ui/ && uv ru
 /api/v1/graph/edges
 /api/v1/graph/subgraph?entity=X&hops=N
 /api/v1/graph/filters
+/api/v1/agents/support/query - support agent sync query
+/api/v1/agents/am/query     - AM agent sync query
+/api/v1/agents/am/state/{id} - AM agent session state
+/api/v1/agents/sessions     - create/list/delete sessions
 ```
 
 ## Architecture
