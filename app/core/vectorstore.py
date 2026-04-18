@@ -38,7 +38,7 @@ def ensure_collection_exists(client: QdrantClient, collection_name: str, vector_
 
 
 def _ensure_payload_indexes(client: QdrantClient, collection_name: str) -> None:
-    index_fields = ["source_doc", "chunk_id", "subject_id", "object_id"]
+    index_fields = ["source_doc", "chunk_id", "subject_id", "object_id", "status"]
     for field in index_fields:
         try:
             client.create_payload_index(
