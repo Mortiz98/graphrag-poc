@@ -24,3 +24,7 @@ uploads/
 # OS
 .DS_Store
 Thumbs.db
+
+# Orchestration
+.agents/
+.opensymphony/

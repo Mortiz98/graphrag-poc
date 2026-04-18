@@ -20,11 +20,19 @@ class Settings(BaseSettings):
     nebula_password: str = "nebula"
     nebula_space: str = "graphrag"
 
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
+
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     log_level: str = "INFO"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @property
+    def is_gemini_configured(self) -> bool:
+        """Check if Gemini API key is configured."""
+        return bool(self.gemini_api_key)
 
     @property
     def is_llm_configured(self) -> bool:

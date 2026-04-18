@@ -1,14 +1,45 @@
-"""Query pipeline: question -> vector search -> graph traversal -> LLM answer."""
+"""Query pipeline: question -> query expansion -> vector search -> graph traversal -> LLM answer."""
 
 from app.config import get_settings
 from app.core import logger
 from app.core.embeddings import get_embeddings
+from app.core.genai import generate as gemini_generate
 from app.core.graph import get_nebula_session
 from app.core.llm import get_llm
 from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
 from app.models.graph_schema import EDGE_RELATED_TO, SPACE_NAME, escape_ngql
 from app.models.schemas import QueryResponse, SourceInfo, SourceTriplet
-from app.prompts.qa import QA_SYSTEM_PROMPT, QA_USER_PROMPT
+from app.prompts.qa import QA_SYSTEM_PROMPT, QA_USER_PROMPT, QUERY_EXPANSION_PROMPT
+
+
+def expand_query(question: str) -> list[str]:
+    """Expand a query into 2-3 variations using Gemini.
+
+    Falls back to the existing LangChain LLM when Gemini is not configured.
+
+    Args:
+        question: The original user query.
+
+    Returns:
+        A list of expanded query variations (excluding the original).
+    """
+    prompt = QUERY_EXPANSION_PROMPT.format(query=question)
+    settings = get_settings()
+
+    try:
+        if settings.is_gemini_configured:
+            raw_text = gemini_generate(prompt)
+        else:
+            llm = get_llm(temperature=0.3)
+            response = llm.invoke([{"role": "user", "content": prompt}])
+            raw_text = response.content.strip()
+    except Exception as exc:
+        logger.warning("query_expansion_failed", error=str(exc))
+        return []
+
+    variations = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    logger.info("query_expansion_completed", original=question[:50], variations=len(variations))
+    return variations
 
 
 def search_similar_triplets(question: str, top_k: int = 5) -> list[dict]:
@@ -208,10 +239,84 @@ def stream_answer(question: str, context: str):
             yield chunk.content
 
 
-def query(question: str, top_k: int = 5) -> QueryResponse:
-    logger.info("query_started", question=question[:50], top_k=top_k)
+def _fuse_expansion_results(all_result_sets: list[list[dict]]) -> list[dict]:
+    """Deduplicate triplets collected from multiple query variations.
 
-    vector_triplets = search_similar_triplets(question, top_k)
+    Keeps the highest-scoring duplicate when the same triplet key appears
+    across different expansion results.
+
+    Args:
+        all_result_sets: List of triplet lists, one per query variation.
+
+    Returns:
+        Deduplicated list of triplets sorted by score descending.
+    """
+    best: dict[str, dict] = {}
+    for result_set in all_result_sets:
+        for t in result_set:
+            key = f"{t.get('subject', '')}|{t.get('predicate', '')}|{t.get('object', '')}"
+            existing = best.get(key)
+            if existing is None or t.get("score", 0.0) > existing.get("score", 0.0):
+                best[key] = t
+
+    fused = sorted(best.values(), key=lambda t: t.get("score", 0.0), reverse=True)
+    logger.info("expansion_fusion_completed", input_sets=len(all_result_sets), output=len(fused))
+    return fused
+
+
+def search_with_expansion(question: str, top_k: int = 5) -> list[dict]:
+    """Search with the original query and its expanded variations.
+
+    Expands the query into variations, searches with each, and fuses
+    the results. Falls back to a single search when expansion fails
+    or returns no variations.
+
+    Args:
+        question: The original user query.
+        top_k: Number of results per search.
+
+    Returns:
+        Deduplicated list of triplets from all searches.
+    """
+    variations = expand_query(question)
+
+    queries = [question] + variations
+    all_result_sets: list[list[dict]] = []
+
+    for q in queries:
+        results = search_similar_triplets(q, top_k)
+        all_result_sets.append(results)
+
+    fused = _fuse_expansion_results(all_result_sets)
+    logger.info(
+        "search_with_expansion_completed",
+        original=question[:50],
+        variations=len(variations),
+        total_results=sum(len(r) for r in all_result_sets),
+        fused=len(fused),
+    )
+    return fused
+
+
+def query(question: str, top_k: int = 5, expand: bool = False) -> QueryResponse:
+    """Run the full query pipeline.
+
+    Args:
+        question: The user's question.
+        top_k: Number of triplets to retrieve per search.
+        expand: If True, expand the query into variations and search
+                with each, then fuse results. If False, use only the
+                original query.
+
+    Returns:
+        QueryResponse with answer, sources, entities, and confidence.
+    """
+    logger.info("query_started", question=question[:50], top_k=top_k, expand=expand)
+
+    if expand:
+        vector_triplets = search_with_expansion(question, top_k)
+    else:
+        vector_triplets = search_similar_triplets(question, top_k)
 
     entity_ids = list(
         {t["subject_id"] for t in vector_triplets if t.get("subject_id")}

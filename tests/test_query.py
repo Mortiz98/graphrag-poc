@@ -5,9 +5,12 @@ from unittest.mock import MagicMock, patch
 from app.pipelines.query import (
     _compute_confidence,
     _fuse_context,
+    _fuse_expansion_results,
+    expand_query,
     generate_answer,
     query,
     search_similar_triplets,
+    search_with_expansion,
     traverse_graph,
 )
 
@@ -223,3 +226,228 @@ class TestQuery:
         result = query("Obscure question")
         assert result.confidence == 0.0
         assert result.sources == []
+
+    @patch("app.pipelines.query.generate_answer")
+    @patch("app.pipelines.query._compute_confidence", return_value=0.85)
+    @patch("app.pipelines.query.traverse_graph", return_value=[])
+    @patch("app.pipelines.query.search_similar_triplets")
+    def test_default_expand_is_false(self, mock_search, mock_traverse, mock_conf, mock_answer):
+        """When expand is not passed, search_similar_triplets is called directly (no expansion)."""
+        mock_search.return_value = [
+            {
+                "subject": "Python",
+                "predicate": "is_a",
+                "object": "Language",
+                "subject_id": "Python",
+                "object_id": "Language",
+                "chunk_id": "c1",
+                "source_doc": "test.txt",
+                "score": 0.95,
+            }
+        ]
+        mock_answer.return_value = "A language."
+
+        query("What is Python?")
+        mock_search.assert_called_once_with("What is Python?", 5)
+
+    @patch("app.pipelines.query.generate_answer")
+    @patch("app.pipelines.query._compute_confidence", return_value=0.85)
+    @patch("app.pipelines.query.traverse_graph", return_value=[])
+    @patch("app.pipelines.query.search_with_expansion")
+    def test_expand_true_uses_expansion(self, mock_expand_search, mock_traverse, mock_conf, mock_answer):
+        """When expand=True, search_with_expansion is used instead of search_similar_triplets."""
+        mock_expand_search.return_value = [
+            {
+                "subject": "Python",
+                "predicate": "is_a",
+                "object": "Language",
+                "subject_id": "Python",
+                "object_id": "Language",
+                "chunk_id": "c1",
+                "source_doc": "test.txt",
+                "score": 0.95,
+            }
+        ]
+        mock_answer.return_value = "A language."
+
+        result = query("What is Python?", expand=True)
+        mock_expand_search.assert_called_once_with("What is Python?", 5)
+        assert result.answer == "A language."
+
+
+class TestExpandQuery:
+    @patch("app.pipelines.query.get_settings")
+    @patch("app.pipelines.query.gemini_generate")
+    def test_expand_with_gemini(self, mock_gemini, mock_settings):
+        """When Gemini is configured, use gemini_generate for expansion."""
+        mock_settings.return_value.is_gemini_configured = True
+        mock_gemini.return_value = "What programming language is Python?\nWho created Python?"
+
+        variations = expand_query("Python")
+        assert len(variations) == 2
+        assert "What programming language is Python?" in variations
+        assert "Who created Python?" in variations
+
+    @patch("app.pipelines.query.get_settings")
+    @patch("app.pipelines.query.get_llm")
+    def test_expand_fallback_to_llm(self, mock_get_llm, mock_settings):
+        """When Gemini is not configured, fall back to LangChain LLM."""
+        mock_settings.return_value.is_gemini_configured = False
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = "What kind of language is Python?\nExplain Python language"
+        mock_llm.invoke.return_value = mock_response
+        mock_get_llm.return_value = mock_llm
+
+        variations = expand_query("Python")
+        assert len(variations) == 2
+        mock_get_llm.assert_called_once_with(temperature=0.3)
+
+    @patch("app.pipelines.query.get_settings")
+    @patch("app.pipelines.query.gemini_generate", side_effect=Exception("API error"))
+    def test_expand_exception_returns_empty(self, mock_gemini, mock_settings):
+        """When expansion fails, return an empty list (graceful degradation)."""
+        mock_settings.return_value.is_gemini_configured = True
+        variations = expand_query("Python")
+        assert variations == []
+
+    @patch("app.pipelines.query.get_settings")
+    @patch("app.pipelines.query.gemini_generate")
+    def test_expand_strips_blank_lines(self, mock_gemini, mock_settings):
+        """Blank lines in LLM output are filtered out."""
+        mock_settings.return_value.is_gemini_configured = True
+        mock_gemini.return_value = "\nWhat is Python language?\n\nWho uses Python?\n"
+
+        variations = expand_query("Python")
+        assert len(variations) == 2
+
+    @patch("app.pipelines.query.get_settings")
+    @patch("app.pipelines.query.gemini_generate")
+    def test_expand_vague_query_gets_relevant_terms(self, mock_gemini, mock_settings):
+        """Vague queries get expanded with more specific terminology."""
+        mock_settings.return_value.is_gemini_configured = True
+        mock_gemini.return_value = (
+            "What is the Python programming language used for?\n"
+            "Explain the Python coding language\n"
+            "What are applications of Python software"
+        )
+
+        variations = expand_query("tell me about python")
+        assert len(variations) == 3
+        # Each variation should contain relevant expanded terms
+        for v in variations:
+            assert len(v) > len("tell me about python") or "python" in v.lower()
+
+
+class TestFuseExpansionResults:
+    def test_deduplication_across_sets(self):
+        """Same triplet from different queries should be deduplicated."""
+        set_a = [{"subject": "Python", "predicate": "is_a", "object": "Language", "score": 0.9}]
+        set_b = [{"subject": "Python", "predicate": "is_a", "object": "Language", "score": 0.85}]
+        fused = _fuse_expansion_results([set_a, set_b])
+        assert len(fused) == 1
+        assert fused[0]["score"] == 0.9  # keeps higher score
+
+    def test_different_triplets_combined(self):
+        """Different triplets from different queries should all be kept."""
+        set_a = [{"subject": "Python", "predicate": "is_a", "object": "Language", "score": 0.9}]
+        set_b = [{"subject": "Guido", "predicate": "created", "object": "Python", "score": 0.8}]
+        fused = _fuse_expansion_results([set_a, set_b])
+        assert len(fused) == 2
+
+    def test_sorted_by_score_descending(self):
+        """Results should be sorted by score from highest to lowest."""
+        set_a = [{"subject": "A", "predicate": "p", "object": "B", "score": 0.5}]
+        set_b = [{"subject": "C", "predicate": "q", "object": "D", "score": 0.95}]
+        set_c = [{"subject": "E", "predicate": "r", "object": "F", "score": 0.7}]
+        fused = _fuse_expansion_results([set_a, set_b, set_c])
+        assert fused[0]["score"] == 0.95
+        assert fused[1]["score"] == 0.7
+        assert fused[2]["score"] == 0.5
+
+    def test_empty_input_sets(self):
+        """Empty input list returns empty results."""
+        fused = _fuse_expansion_results([])
+        assert fused == []
+
+    def test_empty_result_sets(self):
+        """List of empty result sets returns empty results."""
+        fused = _fuse_expansion_results([[], [], []])
+        assert fused == []
+
+    def test_single_set(self):
+        """Single result set works correctly."""
+        set_a = [
+            {"subject": "A", "predicate": "p", "object": "B", "score": 0.9},
+            {"subject": "C", "predicate": "q", "object": "D", "score": 0.8},
+        ]
+        fused = _fuse_expansion_results([set_a])
+        assert len(fused) == 2
+
+    def test_keeps_highest_score_for_duplicates(self):
+        """When the same triplet appears with different scores, keep the highest."""
+        set_a = [{"subject": "X", "predicate": "rel", "object": "Y", "score": 0.5}]
+        set_b = [{"subject": "X", "predicate": "rel", "object": "Y", "score": 0.99}]
+        set_c = [{"subject": "X", "predicate": "rel", "object": "Y", "score": 0.7}]
+        fused = _fuse_expansion_results([set_a, set_b, set_c])
+        assert len(fused) == 1
+        assert fused[0]["score"] == 0.99
+
+
+class TestSearchWithExpansion:
+    @patch("app.pipelines.query.search_similar_triplets")
+    @patch("app.pipelines.query.expand_query")
+    def test_searches_original_and_variations(self, mock_expand, mock_search):
+        """Search is called for the original query plus each variation."""
+        mock_expand.return_value = ["What is Python language?", "Explain Python"]
+        mock_search.return_value = []
+
+        search_with_expansion("Python", top_k=5)
+
+        assert mock_search.call_count == 3  # original + 2 variations
+        mock_search.assert_any_call("Python", 5)
+        mock_search.assert_any_call("What is Python language?", 5)
+        mock_search.assert_any_call("Explain Python", 5)
+
+    @patch("app.pipelines.query.search_similar_triplets")
+    @patch("app.pipelines.query.expand_query")
+    def test_fuses_results_across_variations(self, mock_expand, mock_search):
+        """Results from all variations are fused and deduplicated."""
+        mock_expand.return_value = ["What is Python language?"]
+
+        result_a = [{"subject": "Python", "predicate": "is_a", "object": "Language", "score": 0.9}]
+        result_b = [{"subject": "Python", "predicate": "is_a", "object": "Language", "score": 0.8}]
+        mock_search.side_effect = [result_a, result_b]
+
+        fused = search_with_expansion("Python", top_k=5)
+        assert len(fused) == 1  # deduplicated
+        assert fused[0]["score"] == 0.9  # keeps higher score
+
+    @patch("app.pipelines.query.search_similar_triplets")
+    @patch("app.pipelines.query.expand_query")
+    def test_no_variations_searches_only_original(self, mock_expand, mock_search):
+        """When expansion returns no variations, only the original query is searched."""
+        mock_expand.return_value = []
+        mock_search.return_value = [{"subject": "A", "predicate": "b", "object": "C", "score": 0.8}]
+
+        fused = search_with_expansion("Python", top_k=5)
+        mock_search.assert_called_once_with("Python", 5)
+        assert len(fused) == 1
+
+    @patch("app.pipelines.query.search_similar_triplets")
+    @patch("app.pipelines.query.expand_query")
+    def test_expansion_retrieves_documents_original_missed(self, mock_expand, mock_search):
+        """Expanded queries can retrieve triplets the original query missed."""
+        mock_expand.return_value = ["Who created the Python language?"]
+
+        # Original finds only "is_a" triplet
+        original_result = [{"subject": "Python", "predicate": "is_a", "object": "Language", "score": 0.9}]
+        # Variation finds an additional "created_by" triplet
+        variation_result = [{"subject": "Python", "predicate": "created_by", "object": "Guido", "score": 0.85}]
+        mock_search.side_effect = [original_result, variation_result]
+
+        fused = search_with_expansion("Python", top_k=5)
+        assert len(fused) == 2
+        predicates = {t["predicate"] for t in fused}
+        assert "is_a" in predicates
+        assert "created_by" in predicates
