@@ -24,3 +24,7 @@ uploads/
 # OS
 .DS_Store
 Thumbs.db
+# OpenSymphony workspace artifacts
+.agents/
+.opensymphony/
+.opensymphony.after_create.json
