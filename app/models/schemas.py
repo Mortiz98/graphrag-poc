@@ -62,3 +62,33 @@ class GraphStats(BaseModel):
     entity_count: int
     edge_count: int
     space: str
+
+
+class AgentQueryRequest(BaseModel):
+    question: str = Field(..., min_length=1, description="Question for the agent")
+    session_id: str | None = Field(default=None, description="Optional session ID for continuity")
+
+
+class AgentQueryResponse(BaseModel):
+    answer: str = Field(..., description="Agent response")
+    session_id: str = Field(..., description="Session ID for continuity")
+    agent_type: str = Field(..., description="Type of agent that responded")
+
+
+class AgentStateResponse(BaseModel):
+    session_id: str
+    agent_type: str = Field(default="am", description="Agent type")
+    status: str = Field(default="active", description="Session status")
+    message_count: int = Field(default=0, description="Number of messages in session")
+    created_at: str = Field(default="", description="Session creation timestamp")
+
+
+class SessionInfo(BaseModel):
+    session_id: str
+    agent_type: str
+    status: str
+    created_at: str
+
+
+class SessionListResponse(BaseModel):
+    sessions: list[SessionInfo] = Field(default_factory=list)
