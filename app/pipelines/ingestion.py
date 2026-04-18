@@ -13,6 +13,7 @@ from app.core import logger
 from app.core.embeddings import get_embeddings
 from app.core.graph import get_nebula_session
 from app.core.llm import get_llm
+from app.core.retrieval import text_to_sparse_vector
 from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
 from app.models.graph_schema import (
     EDGE_RELATED_TO,
@@ -142,6 +143,7 @@ def store_in_vectorstore(
     source_file: str,
 ) -> int:
     from app.config import get_settings
+    from app.core.vectorstore import DENSE_VECTOR_NAME, SPARSE_VECTOR_NAME
 
     settings = get_settings()
     client = get_qdrant_client()
@@ -187,8 +189,15 @@ def store_in_vectorstore(
         vectors = embeddings.embed_documents(batch_texts)
 
         points = [
-            PointStruct(id=bid, vector=vec, payload=payload)
-            for bid, vec, payload in zip(batch_ids, vectors, batch_payloads)
+            PointStruct(
+                id=bid,
+                vector={
+                    DENSE_VECTOR_NAME: vec,
+                    SPARSE_VECTOR_NAME: text_to_sparse_vector(text),
+                },
+                payload=payload,
+            )
+            for bid, vec, text, payload in zip(batch_ids, vectors, batch_texts, batch_payloads)
         ]
         client.upsert(collection_name=settings.qdrant_collection_name, points=points)
         total_stored += len(points)

@@ -4,12 +4,17 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    Modifier,
     PayloadSchemaType,
+    SparseVectorParams,
     VectorParams,
 )
 
 from app.config import get_settings
 from app.core import logger
+
+DENSE_VECTOR_NAME = "dense"
+SPARSE_VECTOR_NAME = "sparse"
 
 
 def get_qdrant_client() -> QdrantClient:
@@ -22,18 +27,53 @@ def get_qdrant_client() -> QdrantClient:
     )
 
 
+def _collection_has_sparse_vectors(client: QdrantClient, collection_name: str) -> bool:
+    """Check if a collection already has sparse vectors configured."""
+    try:
+        info = client.get_collection(collection_name)
+        return info.config.params.sparse_vectors is not None and len(info.config.params.sparse_vectors) > 0
+    except Exception:
+        return False
+
+
+def _migrate_collection_to_sparse(client: QdrantClient, collection_name: str, vector_size: int) -> None:
+    """Migrate a collection to support sparse vectors by recreating it.
+
+    This deletes the existing collection and recreates it with both
+    dense and sparse named vectors. Existing data is lost.
+    """
+    logger.warning("migrating_collection_to_sparse", collection=collection_name)
+    client.delete_collection(collection_name)
+    _create_collection_with_sparse(client, collection_name, vector_size)
+    logger.info("collection_migrated", collection=collection_name)
+
+
+def _create_collection_with_sparse(client: QdrantClient, collection_name: str, vector_size: int) -> None:
+    """Create a new collection with both dense and sparse named vectors."""
+    client.create_collection(
+        collection_name=collection_name,
+        vectors_config={
+            DENSE_VECTOR_NAME: VectorParams(
+                size=vector_size,
+                distance=Distance.COSINE,
+            ),
+        },
+        sparse_vectors_config={
+            SPARSE_VECTOR_NAME: SparseVectorParams(
+                modifier=Modifier.IDF,
+            ),
+        },
+    )
+    logger.info("collection_created_with_sparse", collection=collection_name)
+
+
 def ensure_collection_exists(client: QdrantClient, collection_name: str, vector_size: int = 1536) -> None:
     collections = client.get_collections().collections
     names = [c.name for c in collections]
     if collection_name not in names:
-        client.create_collection(
-            collection_name=collection_name,
-            vectors_config=VectorParams(
-                size=vector_size,
-                distance=Distance.COSINE,
-            ),
-        )
-        logger.info("collection_created", collection=collection_name)
+        _create_collection_with_sparse(client, collection_name, vector_size)
+    elif not _collection_has_sparse_vectors(client, collection_name):
+        _migrate_collection_to_sparse(client, collection_name, vector_size)
     _ensure_payload_indexes(client, collection_name)
 
 

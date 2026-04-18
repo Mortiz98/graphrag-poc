@@ -1,13 +1,77 @@
 """Unit tests for vectorstore module."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from app.core.vectorstore import (
+    _collection_has_sparse_vectors,
+    _create_collection_with_sparse,
+    _migrate_collection_to_sparse,
     check_qdrant_health,
     ensure_collection_exists,
     get_unique_source_docs,
     scroll_by_source_doc,
 )
+
+
+def _mock_collection_info_with_sparse():
+    """Return a mock collection info that has sparse vectors configured."""
+    mock_info = MagicMock()
+    sparse_vectors = MagicMock()
+    sparse_vectors.__len__ = MagicMock(return_value=1)
+    type(mock_info.config.params).sparse_vectors = PropertyMock(return_value=sparse_vectors)
+    return mock_info
+
+
+def _mock_collection_info_without_sparse():
+    """Return a mock collection info that has no sparse vectors."""
+    mock_info = MagicMock()
+    type(mock_info.config.params).sparse_vectors = PropertyMock(return_value=None)
+    return mock_info
+
+
+class TestCollectionHasSparseVectors:
+    def test_returns_true_when_sparse_configured(self):
+        mock_client = MagicMock()
+        mock_client.get_collection.return_value = _mock_collection_info_with_sparse()
+        assert _collection_has_sparse_vectors(mock_client, "test_coll") is True
+
+    def test_returns_false_when_no_sparse(self):
+        mock_client = MagicMock()
+        mock_client.get_collection.return_value = _mock_collection_info_without_sparse()
+        assert _collection_has_sparse_vectors(mock_client, "test_coll") is False
+
+    def test_returns_false_when_empty_sparse_dict(self):
+        mock_client = MagicMock()
+        mock_info = MagicMock()
+        sparse_vectors = MagicMock()
+        sparse_vectors.__len__ = MagicMock(return_value=0)
+        type(mock_info.config.params).sparse_vectors = PropertyMock(return_value=sparse_vectors)
+        mock_client.get_collection.return_value = mock_info
+        assert _collection_has_sparse_vectors(mock_client, "test_coll") is False
+
+    def test_returns_false_on_exception(self):
+        mock_client = MagicMock()
+        mock_client.get_collection.side_effect = Exception("fail")
+        assert _collection_has_sparse_vectors(mock_client, "test_coll") is False
+
+
+class TestCreateCollectionWithSparse:
+    def test_creates_with_dense_and_sparse(self):
+        mock_client = MagicMock()
+        _create_collection_with_sparse(mock_client, "test_coll", 1536)
+        mock_client.create_collection.assert_called_once()
+        call_kwargs = mock_client.create_collection.call_args[1]
+        assert call_kwargs["collection_name"] == "test_coll"
+        assert "dense" in call_kwargs["vectors_config"]
+        assert "sparse" in call_kwargs["sparse_vectors_config"]
+
+
+class TestMigrateCollectionToSparse:
+    def test_deletes_and_recreates(self):
+        mock_client = MagicMock()
+        _migrate_collection_to_sparse(mock_client, "test_coll", 1536)
+        mock_client.delete_collection.assert_called_once_with("test_coll")
+        mock_client.create_collection.assert_called_once()
 
 
 class TestEnsureCollectionExists:
@@ -23,15 +87,30 @@ class TestEnsureCollectionExists:
         mock_client.create_collection.assert_called_once()
 
     @patch("app.core.vectorstore._ensure_payload_indexes")
-    def test_skips_if_exists(self, mock_indexes):
+    def test_skips_if_exists_with_sparse(self, mock_indexes):
         mock_client = MagicMock()
         mock_collection = MagicMock()
         mock_collection.name = "triplets"
         mock_client.get_collections.return_value = MagicMock(collections=[mock_collection])
+        mock_client.get_collection.return_value = _mock_collection_info_with_sparse()
 
         ensure_collection_exists(mock_client, "triplets")
 
         mock_client.create_collection.assert_not_called()
+        mock_client.delete_collection.assert_not_called()
+
+    @patch("app.core.vectorstore._ensure_payload_indexes")
+    def test_migrates_if_exists_without_sparse(self, mock_indexes):
+        mock_client = MagicMock()
+        mock_collection = MagicMock()
+        mock_collection.name = "triplets"
+        mock_client.get_collections.return_value = MagicMock(collections=[mock_collection])
+        mock_client.get_collection.return_value = _mock_collection_info_without_sparse()
+
+        ensure_collection_exists(mock_client, "triplets")
+
+        mock_client.delete_collection.assert_called_once_with("triplets")
+        mock_client.create_collection.assert_called_once()
 
 
 class TestScrollBySourceDoc:

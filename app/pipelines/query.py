@@ -5,7 +5,7 @@ from app.core import logger
 from app.core.embeddings import get_embeddings
 from app.core.graph import get_nebula_session
 from app.core.llm import get_llm
-from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
+from app.core.vectorstore import DENSE_VECTOR_NAME, ensure_collection_exists, get_qdrant_client
 from app.models.graph_schema import EDGE_RELATED_TO, SPACE_NAME, escape_ngql
 from app.models.schemas import QueryResponse, SourceInfo, SourceTriplet
 from app.prompts.qa import QA_SYSTEM_PROMPT, QA_USER_PROMPT
@@ -22,6 +22,7 @@ def search_similar_triplets(question: str, top_k: int = 5) -> list[dict]:
     results = client.query_points(
         collection_name=settings.qdrant_collection_name,
         query=query_vector,
+        using=DENSE_VECTOR_NAME,
         limit=top_k,
         with_payload=True,
     )
