@@ -3,8 +3,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from langchain_core.documents import Document
-
+from app.models.documents import Document
 from app.models.schemas import Triplet
 from app.pipelines.ingestion import (
     _sanitize_vertex_id,
@@ -68,16 +67,12 @@ class TestChunkDocuments:
 
 
 class TestExtractTripletsFromChunk:
-    @patch("app.pipelines.ingestion.get_llm")
-    def test_valid_json_response(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = (
+    @patch("app.pipelines.ingestion.generate")
+    def test_valid_json_response(self, mock_generate):
+        mock_generate.return_value = (
             '[{"subject":"Python","subject_type":"Technology",'
             '"predicate":"is_a","object":"Language","object_type":"Concept"}]'
         )
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
 
         chunk = Document(page_content="Python is a language", metadata={"chunk_id": "test"})
         triplets = extract_triplets_from_chunk(chunk)
@@ -86,49 +81,33 @@ class TestExtractTripletsFromChunk:
         assert triplets[0].subject == "Python"
         assert triplets[0].predicate == "is_a"
 
-    @patch("app.pipelines.ingestion.get_llm")
-    def test_no_json_in_response(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = "No entities found here"
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
+    @patch("app.pipelines.ingestion.generate")
+    def test_no_json_in_response(self, mock_generate):
+        mock_generate.return_value = "No entities found here"
 
         chunk = Document(page_content="Random text", metadata={"chunk_id": "test"})
         triplets = extract_triplets_from_chunk(chunk)
         assert triplets == []
 
-    @patch("app.pipelines.ingestion.get_llm")
-    def test_invalid_triplet_skipped(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = '[{"subject":"Python"},{"subject":"A","predicate":"b","object":"C"}]'
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
+    @patch("app.pipelines.ingestion.generate")
+    def test_invalid_triplet_skipped(self, mock_generate):
+        mock_generate.return_value = '[{"subject":"Python"},{"subject":"A","predicate":"b","object":"C"}]'
 
         chunk = Document(page_content="Text", metadata={"chunk_id": "test"})
         triplets = extract_triplets_from_chunk(chunk)
         assert len(triplets) == 1
 
-    @patch("app.pipelines.ingestion.get_llm")
-    def test_json_with_markdown_wrapper(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = '```json\n[{"subject":"X","predicate":"y","object":"Z"}]\n```'
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
+    @patch("app.pipelines.ingestion.generate")
+    def test_json_with_markdown_wrapper(self, mock_generate):
+        mock_generate.return_value = '```json\n[{"subject":"X","predicate":"y","object":"Z"}]\n```'
 
         chunk = Document(page_content="Text", metadata={"chunk_id": "test"})
         triplets = extract_triplets_from_chunk(chunk)
         assert len(triplets) == 1
 
-    @patch("app.pipelines.ingestion.get_llm")
-    def test_empty_json_array(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = "[]"
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
+    @patch("app.pipelines.ingestion.generate")
+    def test_empty_json_array(self, mock_generate):
+        mock_generate.return_value = "[]"
 
         chunk = Document(page_content="Text", metadata={"chunk_id": "test"})
         triplets = extract_triplets_from_chunk(chunk)
@@ -198,7 +177,7 @@ class TestStoreInVectorstore:
     @patch("app.pipelines.ingestion.get_embeddings")
     def test_stores_vectors(self, mock_embeddings, mock_ensure, mock_client):
         mock_emb = MagicMock()
-        mock_emb.embed_documents.return_value = [[0.1] * 1536]
+        mock_emb.embed_documents.return_value = [[0.1] * 768]
         mock_embeddings.return_value = mock_emb
 
         mock_qdrant = MagicMock()
@@ -227,10 +206,11 @@ class TestStoreInVectorstore:
 class TestIngestDocument:
     @patch("app.pipelines.ingestion.store_in_vectorstore", return_value=5)
     @patch("app.pipelines.ingestion.store_in_graph", return_value={"A": "A"})
+    @patch("app.pipelines.ingestion.run_consolidation_pipeline", side_effect=lambda x, **kw: x)
     @patch("app.pipelines.ingestion.extract_triplets")
     @patch("app.pipelines.ingestion.chunk_documents")
     @patch("app.pipelines.ingestion.load_document")
-    def test_full_pipeline(self, mock_load, mock_chunk, mock_extract, mock_graph, mock_vector):
+    def test_full_pipeline(self, mock_load, mock_chunk, mock_extract, mock_consolidate, mock_graph, mock_vector):
         mock_load.return_value = [Document(page_content="text")]
         mock_chunk.return_value = [Document(page_content="text", metadata={"chunk_id": "c1"})]
         mock_extract.return_value = [

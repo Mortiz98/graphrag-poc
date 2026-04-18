@@ -34,12 +34,17 @@ async def query_endpoint(request: QueryRequest):
         scope = dict(request.scope) if request.scope else {}
         if request.account_id:
             scope["account_id"] = request.account_id
+        if request.tenant_id:
+            scope["tenant_id"] = request.tenant_id
+        if request.user_id:
+            scope["user_id"] = request.user_id
         return query_pipeline(
             question=request.question,
             top_k=request.top_k,
             min_score=request.min_score,
             filters=filters or None,
             scope=scope or None,
+            active_only=request.active_only,
         )
     except Exception as e:
         raise HTTPException(
@@ -66,6 +71,7 @@ async def query_stream_endpoint(request: QueryRequest):
             min_score=request.min_score,
             filters=request.filters,
             scope=request.scope,
+            active_only=request.active_only,
         )
 
         entity_ids = list(

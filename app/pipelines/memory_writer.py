@@ -86,6 +86,7 @@ def record_fact(
         "source_doc": source_doc,
         "created_at": now,
         "memory_type": fact_type,
+        "is_active": True,
     }
 
     write_facts_to_store([fact], system=system)
@@ -120,7 +121,7 @@ def supersede_fact(
         client = get_qdrant_client()
         client.set_payload(
             collection_name=settings.qdrant_collection_name,
-            payload={"valid_to": now, "superseded_by": new_id},
+            payload={"valid_to": now, "superseded_by": new_id, "is_active": False},
             points=[old_fact_id],
         )
         logger.info("fact_superseded", old_id=old_fact_id, new_id=new_id)

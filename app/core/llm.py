@@ -1,15 +1,54 @@
-from langchain_openai import ChatOpenAI
+"""LLM adapter — replaces langchain_openai.ChatOpenAI with Google GenAI."""
 
-from app.config import get_settings
+from __future__ import annotations
+
+from collections.abc import Iterator
+
+from app.core.genai import generate, generate_stream
 
 
-def get_llm(temperature: float = 0.0, streaming: bool = False) -> ChatOpenAI:
+class LLMResponse:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class LLM:
+    def __init__(self, temperature: float = 0.0, streaming: bool = False):
+        self.temperature = temperature
+        self.streaming = streaming
+
+    def invoke(self, messages: list[dict]) -> LLMResponse:
+        system = ""
+        prompt_parts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                system = content
+            else:
+                prompt_parts.append(content)
+        prompt = "\n".join(prompt_parts) if len(prompt_parts) > 1 else (prompt_parts[0] if prompt_parts else "")
+        text = generate(prompt=prompt, system=system, temperature=self.temperature)
+        return LLMResponse(content=text)
+
+    def stream(self, messages: list[dict]) -> Iterator[LLMResponse]:
+        system = ""
+        prompt_parts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                system = content
+            else:
+                prompt_parts.append(content)
+        prompt = "\n".join(prompt_parts) if len(prompt_parts) > 1 else (prompt_parts[0] if prompt_parts else "")
+        for token in generate_stream(prompt=prompt, system=system, temperature=self.temperature):
+            yield LLMResponse(content=token)
+
+
+def get_llm(temperature: float = 0.0, streaming: bool = False) -> LLM:
+    from app.config import get_settings
+
     settings = get_settings()
     settings.validate_api_key()
-    return ChatOpenAI(
-        model=settings.openrouter_llm_model,
-        openai_api_key=settings.openrouter_api_key,
-        openai_api_base=settings.openrouter_base_url,
-        temperature=temperature,
-        streaming=streaming,
-    )
+    return LLM(temperature=temperature, streaming=streaming)

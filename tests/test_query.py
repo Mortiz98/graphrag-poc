@@ -120,7 +120,7 @@ class TestSearchSimilarTriplets:
         reset_retrieval_engine()
 
         mock_emb = MagicMock()
-        mock_emb.embed_query.return_value = [0.1] * 1536
+        mock_emb.embed_query.return_value = [0.1] * 768
         mock_embeddings.return_value = mock_emb
 
         mock_point = MagicMock()
@@ -191,22 +191,18 @@ class TestTraverseGraph:
 
 
 class TestGenerateAnswer:
-    @patch("app.pipelines.query.get_llm")
-    def test_returns_answer(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = "Python is a programming language."
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
+    @patch("app.pipelines.query.generate")
+    def test_returns_answer(self, mock_generate):
+        mock_generate.return_value = "Python is a programming language."
 
         answer = generate_answer("What is Python?", "- Python is_a Language")
         assert answer == "Python is a programming language."
 
-    @patch("app.pipelines.query.get_llm")
-    def test_empty_context_returns_default(self, mock_get_llm):
+    @patch("app.pipelines.query.generate")
+    def test_empty_context_returns_default(self, mock_generate):
         answer = generate_answer("What is Python?", "")
         assert "could not find" in answer.lower()
-        mock_get_llm.assert_not_called()
+        mock_generate.assert_not_called()
 
 
 class TestQuery:

@@ -1,16 +1,16 @@
-.PHONY: run run-api run-ui stop clean test seed init
+.PHONY: run run-api run-ui stop clean test seed init help
 
 DOCKER_UP := docker compose up -d
 DOCKER_DOWN := docker compose down
 API_CMD := uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 UI_CMD := PYTHONPATH=. uv run streamlit run ui/app.py --server.port 8501 --server.headless true
 
-run: ## Start everything (Docker + API + Streamlit)
+run: ## Start everything (Docker + init + API + Streamlit)
 	@$(DOCKER_UP)
-	@echo "Waiting for Docker services..."
-	@sleep 3
-	@echo "Initializing NebulaGraph schema (if needed)..."
-	@PYTHONPATH=. uv run python -c "from scripts.init_nebula import init_schema; init_schema()" 2>/dev/null || echo "Schema init skipped (may already exist)"
+	@echo "Waiting for Docker services to stabilize..."
+	@sleep 10
+	@echo "Initializing NebulaGraph schema..."
+	@PYTHONPATH=. uv run python -c "from scripts.init_nebula import init_schema; init_schema()" 2>/dev/null || echo "Schema init failed — try 'make init' manually"
 	@echo "Starting API server..."
 	@PYTHONPATH=. $(API_CMD) &
 	@API_PID=$$!; \
@@ -38,12 +38,12 @@ clean: ## Full reset — removes Docker volumes and caches
 	@echo "Cleaned."
 
 test: ## Run lint + format + unit tests
-	@PYTHONPATH=. uv run ruff check app/ tests/ && uv run ruff format app/ tests/ && PYTHONPATH=. uv run pytest tests/ -v
+	@PYTHONPATH=. uv run ruff check app/ tests/ evals/ ui/ && uv run ruff format app/ tests/ evals/ ui/ && PYTHONPATH=. uv run pytest tests/ -v
 
 seed: ## Load sample data into the system
 	@PYTHONPATH=. uv run python -c "from scripts.seed import seed; seed()"
 
-init: ## Initialize NebulaGraph schema
+init: ## Initialize NebulaGraph schema (add host + create space + tags + edges)
 	@PYTHONPATH=. uv run python -c "from scripts.init_nebula import init_schema; init_schema()"
 
 help: ## Show this help

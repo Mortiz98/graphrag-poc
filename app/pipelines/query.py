@@ -1,7 +1,7 @@
 """Query pipeline: question -> vector search -> graph traversal -> LLM answer."""
 
 from app.core import logger
-from app.core.llm import get_llm
+from app.core.genai import generate, generate_stream
 from app.core.retrieval import SearchResult, get_retrieval_engine
 from app.models.schemas import QueryResponse, SourceInfo, SourceTriplet
 from app.prompts.qa import QA_SYSTEM_PROMPT, QA_USER_PROMPT
@@ -13,6 +13,7 @@ def search_similar_triplets(
     min_score: float = 0.0,
     filters: dict | None = None,
     scope: dict | None = None,
+    active_only: bool = True,
 ) -> list[SearchResult]:
     engine = get_retrieval_engine()
 
@@ -23,6 +24,7 @@ def search_similar_triplets(
         min_score=min_score,
         filters=filters,
         scope=scope,
+        active_only=active_only,
     )
 
     results = engine.search_dense(
@@ -31,6 +33,7 @@ def search_similar_triplets(
         min_score=min_score,
         filters=filters,
         scope=scope,
+        active_only=active_only,
     )
 
     engine.log_trace(
@@ -44,15 +47,6 @@ def search_similar_triplets(
 
 
 def traverse_graph(entity_ids: list[str], hop_depth: int = 1) -> list[SearchResult]:
-    """Traverse the knowledge graph from given entity IDs.
-
-    Args:
-        entity_ids: List of entity IDs to expand from
-        hop_depth: Number of hops to traverse
-
-    Returns:
-        List of SearchResult objects from graph
-    """
     engine = get_retrieval_engine()
     results = engine.expand_from_graph(entity_ids, hops=hop_depth)
 
@@ -70,15 +64,6 @@ def _fuse_context(
     vector_results: list[SearchResult],
     graph_results: list[SearchResult],
 ) -> tuple[str, list[SearchResult]]:
-    """Fuse vector and graph results into a context string.
-
-    Args:
-        vector_results: Results from vector search
-        graph_results: Results from graph expansion
-
-    Returns:
-        Tuple of (context_string, fused_results)
-    """
     engine = get_retrieval_engine()
     fused, _ = engine.fuse_results(vector_results, graph_results)
 
@@ -91,20 +76,10 @@ def _fuse_context(
 
 
 def _compute_confidence(vector_results: list[SearchResult], fused_count: int) -> float:
-    """Compute confidence score based on vector similarity and coverage.
-
-    Args:
-        vector_results: Results from vector search (with scores)
-        fused_count: Total number of unique fused results
-
-    Returns:
-        Confidence score between 0.0 and 1.0
-    """
     if not vector_results:
         return 0.0
 
     avg_similarity = sum(r.score for r in vector_results) / len(vector_results)
-    # Require at least 3 good results for max coverage score
     coverage_factor = min(fused_count / 3.0, 1.0)
     confidence = avg_similarity * 0.7 + coverage_factor * 0.3
 
@@ -112,60 +87,23 @@ def _compute_confidence(vector_results: list[SearchResult], fused_count: int) ->
 
 
 def generate_answer(question: str, context: str) -> str:
-    """Generate an answer using the LLM.
-
-    Args:
-        question: User question
-        context: Context from retrieval
-
-    Returns:
-        Generated answer
-    """
     if not context.strip():
         return "I could not find relevant information to answer your question."
 
-    llm = get_llm(temperature=0.1)
     prompt = QA_USER_PROMPT.format(context=context, question=question)
-
-    response = llm.invoke(
-        [
-            {"role": "system", "content": QA_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ]
-    )
-
-    answer = response.content.strip()
+    answer = generate(prompt=prompt, system=QA_SYSTEM_PROMPT, temperature=0.1).strip()
     logger.info("answer_generated", question=question[:50], answer_len=len(answer))
     return answer
 
 
 def stream_answer(question: str, context: str):
-    """Stream an answer using the LLM.
-
-    Args:
-        question: User question
-        context: Context from retrieval
-
-    Yields:
-        Text chunks of the generated answer
-    """
     if not context.strip():
         yield "I could not find relevant information to answer your question."
         return
 
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    llm = get_llm(temperature=0.1, streaming=True)
     prompt = QA_USER_PROMPT.format(context=context, question=question)
 
-    messages = [
-        SystemMessage(content=QA_SYSTEM_PROMPT),
-        HumanMessage(content=prompt),
-    ]
-
-    for chunk in llm.stream(messages):
-        if chunk.content:
-            yield chunk.content
+    yield from generate_stream(prompt=prompt, system=QA_SYSTEM_PROMPT, temperature=0.1)
 
 
 def query(
@@ -174,6 +112,7 @@ def query(
     min_score: float = 0.0,
     filters: dict | None = None,
     scope: dict | None = None,
+    active_only: bool = True,
 ) -> QueryResponse:
     logger.info(
         "query_started",
@@ -182,6 +121,7 @@ def query(
         min_score=min_score,
         filters=filters,
         scope=scope,
+        active_only=active_only,
     )
 
     vector_results = search_similar_triplets(
@@ -190,6 +130,7 @@ def query(
         min_score=min_score,
         filters=filters,
         scope=scope,
+        active_only=active_only,
     )
 
     entity_ids = list(

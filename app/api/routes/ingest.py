@@ -35,6 +35,7 @@ async def ingest_file(
     file: UploadFile = File(...),
     system: str = Form("support"),
     tenant_id: str | None = Form(None),
+    user_id: str | None = Form(None),
     case_id: str | None = Form(None),
     product: str | None = Form(None),
     version: str | None = Form(None),
@@ -71,10 +72,11 @@ async def ingest_file(
         )
 
     fact_metadata = None
-    if any([tenant_id, account_id, fact_type, valid_from, valid_to, supersedes, stakeholder, confidence]):
+    if any([tenant_id, account_id, user_id, fact_type, valid_from, valid_to, supersedes, stakeholder, confidence]):
         fact_metadata = FactMetadata(
             tenant_id=tenant_id,
             account_id=account_id,
+            user_id=user_id,
             fact_type=fact_type,
             valid_from=valid_from,
             valid_to=valid_to,

@@ -23,6 +23,15 @@ def load_truth_set(path: str | Path) -> list[dict]:
     return items
 
 
+def _compute_keyword_relevance(retrieved: list, keywords: set[str]) -> set[str]:
+    relevant_ids = set()
+    for r in retrieved:
+        text = f"{r.subject} {r.predicate} {r.object}".lower()
+        if any(kw.lower() in text for kw in keywords):
+            relevant_ids.add(r.chunk_id)
+    return relevant_ids
+
+
 def run_retrieval_eval(
     truth_set_path: str | Path,
     top_k: int = 5,
@@ -46,9 +55,14 @@ def run_retrieval_eval(
         question = item["question"]
         relevant_chunks = set(item.get("relevant_chunks", []))
         relevance_scores = item.get("relevance_scores", {})
+        keywords = item.get("relevant_keywords", [])
 
         retrieved = engine.search_dense(query=question, top_k=max(top_k, 10), scope=scope)
         retrieved_ids = [r.chunk_id for r in retrieved if r.chunk_id]
+
+        if not relevant_chunks and keywords:
+            relevant_chunks = _compute_keyword_relevance(retrieved, set(keywords))
+            relevance_scores = {cid: 1.0 for cid in relevant_chunks}
 
         results["relevance_at_5"].append(relevance_at_k(retrieved_ids, relevant_chunks, k=5))
         results["relevance_at_3"].append(relevance_at_k(retrieved_ids, relevant_chunks, k=3))

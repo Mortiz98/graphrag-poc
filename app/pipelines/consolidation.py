@@ -82,12 +82,14 @@ def apply_supersession(
             from qdrant_client.models import FieldCondition, Filter, MatchValue
 
             client = get_qdrant_client()
-            settings = __import__("app.config", fromlist=["get_settings"]).get_settings()
+            from app.config import get_settings
+
+            settings = get_settings()
             ensure_collection_exists(client, settings.qdrant_collection_name)
 
             client.set_payload(
                 collection_name=settings.qdrant_collection_name,
-                payload={"valid_to": now, "superseded_by": fact.get("id", "unknown")},
+                payload={"valid_to": now, "superseded_by": fact.get("id", "unknown"), "is_active": False},
                 points=[supersedes_id],
                 filters=Filter(
                     must=[

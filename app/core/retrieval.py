@@ -103,16 +103,23 @@ class RetrievalEngine:
             self._embeddings = get_embeddings()
         return self._embeddings
 
-    def _build_filter(self, filters: dict | None, scope: dict | None) -> object | None:
+    def _build_filter(
+        self,
+        filters: dict | None,
+        scope: dict | None,
+        active_only: bool = False,
+    ) -> object | None:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-        conditions = []
+        conditions: list = []
         if scope:
             for key, value in scope.items():
                 conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
         if filters:
             for key, value in filters.items():
                 conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+        if active_only:
+            conditions.append(FieldCondition(key="is_active", match=MatchValue(value=True)))
         return Filter(must=conditions) if conditions else None
 
     def search_dense(
@@ -122,12 +129,13 @@ class RetrievalEngine:
         min_score: float = 0.0,
         filters: dict | None = None,
         scope: dict | None = None,
+        active_only: bool = False,
     ) -> list[SearchResult]:
         client = self._get_vector_client()
         embeddings = self._get_embeddings()
 
         query_vector = embeddings.embed_query(query)
-        query_filter = self._build_filter(filters, scope)
+        query_filter = self._build_filter(filters, scope, active_only=active_only)
 
         results = client.query_points(
             collection_name=self.settings.qdrant_collection_name,
@@ -190,9 +198,10 @@ class RetrievalEngine:
         top_k: int = 5,
         scope: dict | None = None,
         filters: dict | None = None,
+        active_only: bool = False,
     ) -> list[SearchResult]:
         logger.info("search_sparse_fallback_to_dense", query=query[:50])
-        return self.search_dense(query=query, top_k=top_k, filters=filters, scope=scope)
+        return self.search_dense(query=query, top_k=top_k, filters=filters, scope=scope, active_only=active_only)
 
     def search_hybrid(
         self,
@@ -200,9 +209,10 @@ class RetrievalEngine:
         top_k: int = 5,
         scope: dict | None = None,
         filters: dict | None = None,
+        active_only: bool = False,
     ) -> list[SearchResult]:
         logger.info("search_hybrid_fallback_to_dense", query=query[:50])
-        return self.search_dense(query=query, top_k=top_k, filters=filters, scope=scope)
+        return self.search_dense(query=query, top_k=top_k, filters=filters, scope=scope, active_only=active_only)
 
     def rerank(
         self,
@@ -211,6 +221,68 @@ class RetrievalEngine:
     ) -> list[SearchResult]:
         logger.info("rerank_noop_passthrough", query=query[:50], candidates=len(candidates))
         return candidates
+
+    def search_by_filter(
+        self,
+        top_k: int = 50,
+        filters: dict | None = None,
+        scope: dict | None = None,
+        active_only: bool = False,
+    ) -> list[SearchResult]:
+        client = self._get_vector_client()
+        query_filter = self._build_filter(filters, scope, active_only=active_only)
+
+        results = client.scroll(
+            collection_name=self.settings.qdrant_collection_name,
+            limit=top_k,
+            with_payload=True,
+            with_vectors=False,
+            scroll_filter=query_filter,
+        )
+
+        search_results = []
+        for point in results[0]:
+            search_results.append(
+                SearchResult(
+                    subject=point.payload.get("subject", ""),
+                    predicate=point.payload.get("predicate", ""),
+                    object=point.payload.get("object", ""),
+                    score=1.0,
+                    source_doc=point.payload.get("source_doc", ""),
+                    chunk_id=point.payload.get("chunk_id", ""),
+                    subject_id=point.payload.get("subject_id", ""),
+                    object_id=point.payload.get("object_id", ""),
+                    subject_type=point.payload.get("subject_type", ""),
+                    object_type=point.payload.get("object_type", ""),
+                    metadata={
+                        k: v
+                        for k, v in point.payload.items()
+                        if k
+                        not in [
+                            "subject",
+                            "predicate",
+                            "object",
+                            "subject_id",
+                            "object_id",
+                            "chunk_id",
+                            "source_doc",
+                            "subject_type",
+                            "object_type",
+                        ]
+                    },
+                    retrieval_method="filter",
+                    scope=scope or {},
+                )
+            )
+
+        logger.info(
+            "filter_search_completed",
+            results=len(search_results),
+            filters=filters,
+            scope=scope,
+            active_only=active_only,
+        )
+        return search_results
 
     def get_supporting_chunks(self, ids: list[str]) -> list[SearchResult]:
         if not ids:

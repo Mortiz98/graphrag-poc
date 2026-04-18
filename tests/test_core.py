@@ -1,55 +1,62 @@
-"""Unit tests for core modules (graph, vectorstore, llm, embeddings)."""
+"""Unit tests for core modules (graph, vectorstore, llm, embeddings, genai)."""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.config import Settings
-from app.core.embeddings import get_embeddings
+from app.core.genai import reset_genai_client
 from app.core.graph import check_nebula_health, get_nebula_session, reset_pool
-from app.core.llm import get_llm
 
 
 class TestSettingsValidation:
     def test_empty_api_key_raises_error(self):
-        settings = Settings(openrouter_api_key="", gemini_api_key="")
-        with pytest.raises(ValueError, match="No API key configured"):
-            settings.validate_api_key()
-
-    def test_placeholder_api_key_raises_error(self):
-        settings = Settings(openrouter_api_key="your-openrouter-api-key-here", gemini_api_key="")
+        settings = Settings(gemini_api_key="")
         with pytest.raises(ValueError, match="No API key configured"):
             settings.validate_api_key()
 
     def test_valid_api_key_passes(self):
-        settings = Settings(openrouter_api_key="sk-test-12345")
-        settings.validate_api_key()  # Should not raise
+        settings = Settings(gemini_api_key="test-key-123")
+        settings.validate_api_key()
 
     def test_is_llm_configured_false_when_empty(self):
-        settings = Settings(openrouter_api_key="", gemini_api_key="")
-        assert settings.is_llm_configured is False
-
-    def test_is_llm_configured_false_when_placeholder(self):
-        settings = Settings(openrouter_api_key="your-openrouter-api-key-here", gemini_api_key="")
+        settings = Settings(gemini_api_key="")
         assert settings.is_llm_configured is False
 
     def test_is_llm_configured_true_when_valid(self):
-        settings = Settings(openrouter_api_key="sk-test-12345")
+        settings = Settings(gemini_api_key="test-key-123")
         assert settings.is_llm_configured is True
+
+    def test_is_gemini_configured_true_when_key_set(self):
+        settings = Settings(gemini_api_key="test-key-123")
+        assert settings.is_gemini_configured is True
 
 
 class TestGetLLM:
-    def test_returns_llm_with_correct_model(self):
+    @patch("app.config.get_settings")
+    def test_returns_llm_with_correct_temperature(self, mock_settings):
+        mock_settings.return_value = MagicMock(gemini_api_key="test-key", validate_api_key=MagicMock())
+        from app.core.llm import get_llm
+
+        reset_genai_client()
         llm = get_llm(temperature=0.5)
         assert llm.temperature == 0.5
 
-    def test_default_temperature(self):
+    @patch("app.config.get_settings")
+    def test_default_temperature(self, mock_settings):
+        mock_settings.return_value = MagicMock(gemini_api_key="test-key", validate_api_key=MagicMock())
+        from app.core.llm import get_llm
+
         llm = get_llm()
         assert llm.temperature == 0.0
 
 
 class TestGetEmbeddings:
-    def test_returns_embeddings_instance(self):
+    @patch("app.config.get_settings")
+    def test_returns_embeddings_instance(self, mock_settings):
+        mock_settings.return_value = MagicMock(gemini_api_key="test-key", validate_api_key=MagicMock())
+        from app.core.embeddings import get_embeddings
+
         emb = get_embeddings()
         assert emb is not None
 
@@ -113,3 +120,11 @@ class TestResetPool:
         graph_module._pool = MagicMock()
         reset_pool()
         mock_close.assert_called_once()
+
+
+class TestResetGenaiClient:
+    def test_resets_client(self):
+        reset_genai_client()
+        from app.core.genai import _client
+
+        assert _client is None

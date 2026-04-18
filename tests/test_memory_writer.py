@@ -11,7 +11,7 @@ class TestWriteFactsToStore:
     @patch("app.pipelines.memory_writer.ensure_collection_exists")
     def test_writes_facts(self, mock_ensure, mock_client, mock_embeddings):
         mock_emb = MagicMock()
-        mock_emb.embed_documents.return_value = [[0.1] * 1536]
+        mock_emb.embed_documents.return_value = [[0.1] * 768]
         mock_embeddings.return_value = mock_emb
         mock_qdrant = MagicMock()
         mock_client.return_value = mock_qdrant

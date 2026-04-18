@@ -10,26 +10,34 @@ st.title("Query & Chat")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "agent_session_ids" not in st.session_state:
+    st.session_state.agent_session_ids = {"support": None, "am": None}
+
+agent_choice = st.sidebar.selectbox(
+    "Agent",
+    ["support", "am"],
+    format_func=lambda x: "Support Agent" if x == "support" else "Account Manager",
+)
+
+if agent_choice == "am":
+    account_id = st.sidebar.text_input("Account ID", value="acme_corp")
+else:
+    account_id = None
+
+use_streaming = st.sidebar.toggle("Streaming response", value=True)
+
+if st.sidebar.button("New session"):
+    st.session_state.agent_session_ids[agent_choice] = None
+    st.toast("Session reset", icon="🔄")
+
+if st.sidebar.button("Clear chat"):
+    st.session_state.chat_history = []
+    st.toast("Chat cleared", icon="🗑️")
+    st.rerun()
 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if msg["role"] == "assistant" and "confidence" in msg:
-            conf = msg["confidence"]
-            color = "green" if conf > 0.7 else "orange" if conf > 0.4 else "red"
-            st.markdown(f"Confidence: :{color}[{conf:.0%}]")
-        if msg["role"] == "assistant" and "sources" in msg and msg["sources"]:
-            with st.expander("Sources"):
-                for src in msg["sources"]:
-                    st.markdown(f"**{src.get('document', '')}** (chunk `{src.get('chunk_id', '')[:8]}...`)")
-                    for t in src.get("triplets", []):
-                        st.markdown(f"  - {t['subject']} → {t['predicate']} → {t['object']}")
-        if msg["role"] == "assistant" and "entities" in msg and msg["entities"]:
-            with st.expander("Entities found"):
-                st.markdown(", ".join(msg["entities"]))
-
-top_k = st.sidebar.slider("Top-K results", 1, 20, 5)
-use_streaming = st.sidebar.toggle("Streaming response", value=True)
 
 if prompt := st.chat_input("Ask a question..."):
     st.session_state.chat_history.append({"role": "user", "content": prompt})
@@ -37,9 +45,7 @@ if prompt := st.chat_input("Ask a question..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        conf = 0.5
-        sources = []
-        entities = []
+        session_id = st.session_state.agent_session_ids.get(agent_choice)
         full_response = ""
 
         if use_streaming:
@@ -47,12 +53,16 @@ if prompt := st.chat_input("Ask a question..."):
                 response_placeholder = st.empty()
 
                 with st.spinner("Generating response..."):
-                    for event in client.query_stream(prompt, top_k=top_k):
+                    for event in client.agent_query_stream(
+                        prompt,
+                        agent=agent_choice,
+                        session_id=session_id,
+                        account_id=account_id,
+                    ):
                         if event.get("type") == "metadata":
-                            # Extract metadata from first event
-                            conf = event.get("confidence", 0.5)
-                            sources = event.get("sources", [])
-                            entities = event.get("entities", [])
+                            new_sid = event.get("session_id")
+                            if new_sid:
+                                st.session_state.agent_session_ids[agent_choice] = new_sid
                         elif event.get("type") == "token":
                             full_response += event.get("content", "")
                             response_placeholder.markdown(full_response + "▌")
@@ -61,72 +71,31 @@ if prompt := st.chat_input("Ask a question..."):
 
                 response_placeholder.markdown(full_response)
 
-                # Display metadata
-                color = "green" if conf > 0.7 else "orange" if conf > 0.4 else "red"
-                st.markdown(f"Confidence: :{color}[{conf:.0%}]")
-
-                if sources:
-                    with st.expander("Sources"):
-                        for src in sources:
-                            st.markdown(f"**{src.get('document', '')}** (chunk `{src.get('chunk_id', '')[:8]}...`)")
-                            for t in src.get("triplets", []):
-                                st.markdown(f"  - {t['subject']} → {t['predicate']} → {t['object']}")
-
-                if entities:
-                    with st.expander("Entities found"):
-                        st.markdown(", ".join(entities))
-
             except Exception as e:
-                st.error(f"Query failed: {e}")
-                st.toast(f"Error: {e}", icon="❌")
+                st.error(f"Agent error: {e}")
                 full_response = f"Error: {e}"
-                conf = 0.5
-                sources = []
-                entities = []
         else:
             try:
                 with st.spinner("Thinking..."):
-                    result = client.query(prompt, top_k=top_k)
+                    result = client.agent_query(
+                        prompt,
+                        agent=agent_choice,
+                        session_id=session_id,
+                        account_id=account_id,
+                    )
 
+                if result.session_id and not session_id:
+                    st.session_state.agent_session_ids[agent_choice] = result.session_id
                 full_response = result.answer
-                conf = result.confidence
-                sources = result.sources
-                entities = result.entities_found
                 st.markdown(full_response)
 
-                color = "green" if conf > 0.7 else "orange" if conf > 0.4 else "red"
-                st.markdown(f"Confidence: :{color}[{conf:.0%}]")
-
-                if sources:
-                    with st.expander("Sources"):
-                        for src in sources:
-                            st.markdown(f"**{src.get('document', '')}** (chunk `{src.get('chunk_id', '')[:8]}...`)")
-                            for t in src.get("triplets", []):
-                                st.markdown(f"  - {t['subject']} → {t['predicate']} → {t['object']}")
-
-                if entities:
-                    with st.expander("Entities found"):
-                        st.markdown(", ".join(entities))
-
             except Exception as e:
-                st.error(f"Query failed: {e}")
-                st.toast(f"Error: {e}", icon="❌")
+                st.error(f"Agent error: {e}")
                 full_response = f"Error: {e}"
-                conf = 0.5
-                sources = []
-                entities = []
 
         st.session_state.chat_history.append(
             {
                 "role": "assistant",
                 "content": full_response,
-                "confidence": conf,
-                "sources": sources,
-                "entities": entities,
             }
         )
-
-if st.sidebar.button("Clear chat"):
-    st.session_state.chat_history = []
-    st.toast("Chat cleared", icon="🗑️")
-    st.rerun()

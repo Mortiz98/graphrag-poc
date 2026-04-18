@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import httpx
@@ -29,6 +30,12 @@ class QueryResult:
     sources: list[dict]
     entities_found: list[str]
     confidence: float
+
+
+@dataclass
+class AgentQueryResult:
+    answer: str
+    session_id: str
 
 
 @dataclass
@@ -106,50 +113,55 @@ class ApiClient:
                 status=data["status"],
             )
 
-    def query(
+    def agent_query(
         self,
         question: str,
-        top_k: int = 5,
-        filters: dict | None = None,
-        min_score: float = 0.0,
-    ) -> QueryResult:
+        agent: str = "support",
+        session_id: str | None = None,
+        account_id: str | None = None,
+    ) -> AgentQueryResult:
         with self._client() as c:
-            payload = {"question": question, "top_k": top_k}
-            if filters:
-                payload["filters"] = filters
-            if min_score > 0:
-                payload["min_score"] = min_score
-            resp = c.post("/query", json=payload)
+            if agent == "am":
+                payload = {"question": question, "user_id": "streamlit_user"}
+                if account_id:
+                    payload["account_id"] = account_id
+                if session_id:
+                    payload["session_id"] = session_id
+                resp = c.post("/agents/am/query", params=payload)
+            else:
+                payload = {"question": question, "user_id": "streamlit_user"}
+                if session_id:
+                    payload["session_id"] = session_id
+                resp = c.post("/agents/support/query", params=payload)
             resp.raise_for_status()
             data = resp.json()
-            return QueryResult(
-                answer=data["answer"],
-                sources=data["sources"],
-                entities_found=data["entities_found"],
-                confidence=data["confidence"],
+            return AgentQueryResult(
+                answer=data.get("answer", ""),
+                session_id=data.get("session_id", ""),
             )
 
-    def query_stream(
+    def agent_query_stream(
         self,
         question: str,
-        top_k: int = 5,
-        filters: dict | None = None,
-        min_score: float = 0.0,
+        agent: str = "support",
+        session_id: str | None = None,
+        account_id: str | None = None,
     ):
-        """Stream query response with structured events.
-
-        Yields:
-            dict: Events with 'type' field ('metadata', 'token', or 'done')
-        """
-        import json
-
         with self._client() as c:
-            payload = {"question": question, "top_k": top_k}
-            if filters:
-                payload["filters"] = filters
-            if min_score > 0:
-                payload["min_score"] = min_score
-            with c.stream("POST", "/query/stream", json=payload) as resp:
+            if agent == "am":
+                params = {"question": question, "user_id": "streamlit_user"}
+                if account_id:
+                    params["account_id"] = account_id
+                if session_id:
+                    params["session_id"] = session_id
+                url = "/agents/am/query/stream"
+            else:
+                params = {"question": question, "user_id": "streamlit_user"}
+                if session_id:
+                    params["session_id"] = session_id
+                url = "/agents/support/query/stream"
+
+            with c.stream("POST", url, params=params) as resp:
                 resp.raise_for_status()
                 for line in resp.iter_lines():
                     if line and line.startswith("data: "):
@@ -160,7 +172,6 @@ class ApiClient:
                             if event.get("type") == "done":
                                 break
                         except json.JSONDecodeError:
-                            # Fallback for legacy format (plain text tokens)
                             if data_str == "[DONE]":
                                 break
                             yield {"type": "token", "content": data_str}

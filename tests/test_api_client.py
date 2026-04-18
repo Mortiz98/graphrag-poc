@@ -4,12 +4,12 @@ from unittest.mock import MagicMock, patch
 
 from ui.components.api_client import (
     DEFAULT_BASE_URL,
+    AgentQueryResult,
     ApiClient,
     DocumentInfo,
     GraphStats,
     HealthStatus,
     IngestResult,
-    QueryResult,
 )
 
 
@@ -106,21 +106,13 @@ class TestIngest:
         mock_client.post.assert_called_once()
 
 
-class TestQuery:
+class TestAgentQuery:
     @patch("ui.components.api_client.httpx.Client")
-    def test_successful_query(self, mock_client_cls):
+    def test_successful_support_query(self, mock_client_cls):
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "answer": "Python is a programming language.",
-            "sources": [
-                {
-                    "chunk_id": "abc",
-                    "document": "test.txt",
-                    "triplets": [{"subject": "Python", "predicate": "is_a", "object": "Language"}],
-                }
-            ],
-            "entities_found": ["Python", "Language"],
-            "confidence": 0.85,
+            "session_id": "sess_123",
         }
         mock_response.raise_for_status = MagicMock()
 
@@ -131,22 +123,19 @@ class TestQuery:
         mock_client_cls.return_value = mock_client
 
         client = ApiClient()
-        result = client.query("What is Python?")
+        result = client.agent_query("What is Python?", agent="support")
 
-        assert isinstance(result, QueryResult)
+        assert isinstance(result, AgentQueryResult)
         assert result.answer == "Python is a programming language."
-        assert result.confidence == 0.85
-        assert len(result.sources) == 1
-        assert "Python" in result.entities_found
+        assert result.session_id == "sess_123"
 
     @patch("ui.components.api_client.httpx.Client")
-    def test_query_with_custom_top_k(self, mock_client_cls):
+    def test_am_query_with_account_id(self, mock_client_cls):
         mock_response = MagicMock()
         mock_response.json.return_value = {
-            "answer": "test",
-            "sources": [],
-            "entities_found": [],
-            "confidence": 0.0,
+            "answer": "The account has 3 open commitments.",
+            "session_id": "sess_456",
+            "account_id": "acme_corp",
         }
         mock_response.raise_for_status = MagicMock()
 
@@ -157,10 +146,10 @@ class TestQuery:
         mock_client_cls.return_value = mock_client
 
         client = ApiClient()
-        client.query("test", top_k=10)
+        result = client.agent_query("Status?", agent="am", account_id="acme_corp")
 
-        call_args = mock_client.post.call_args
-        assert call_args[1]["json"]["top_k"] == 10
+        assert isinstance(result, AgentQueryResult)
+        assert result.session_id == "sess_456"
 
 
 class TestListDocuments:

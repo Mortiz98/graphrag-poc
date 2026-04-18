@@ -1,3 +1,5 @@
+import threading
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -11,18 +13,34 @@ from qdrant_client.models import (
 from app.config import get_settings
 from app.core import logger
 
+_qdrant_client: QdrantClient | None = None
+_client_lock = threading.Lock()
+
 
 def get_qdrant_client() -> QdrantClient:
-    settings = get_settings()
-    return QdrantClient(
-        host=settings.qdrant_host,
-        port=settings.qdrant_port,
-        grpc_port=settings.qdrant_grpc_port,
-        prefer_grpc=True,
-    )
+    global _qdrant_client
+    if _qdrant_client is not None:
+        return _qdrant_client
+    with _client_lock:
+        if _qdrant_client is not None:
+            return _qdrant_client
+        settings = get_settings()
+        _qdrant_client = QdrantClient(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            grpc_port=settings.qdrant_grpc_port,
+            prefer_grpc=True,
+        )
+        return _qdrant_client
 
 
-def ensure_collection_exists(client: QdrantClient, collection_name: str, vector_size: int = 1536) -> None:
+def reset_qdrant_client() -> None:
+    global _qdrant_client
+    with _client_lock:
+        _qdrant_client = None
+
+
+def ensure_collection_exists(client: QdrantClient, collection_name: str, vector_size: int = 768) -> None:
     collections = client.get_collections().collections
     names = [c.name for c in collections]
     if collection_name not in names:
@@ -38,7 +56,19 @@ def ensure_collection_exists(client: QdrantClient, collection_name: str, vector_
 
 
 def _ensure_payload_indexes(client: QdrantClient, collection_name: str) -> None:
-    index_fields = ["source_doc", "chunk_id", "subject_id", "object_id", "system", "account_id", "tenant_id"]
+    index_fields = [
+        "source_doc",
+        "chunk_id",
+        "subject_id",
+        "object_id",
+        "system",
+        "account_id",
+        "tenant_id",
+        "user_id",
+        "is_active",
+        "fact_type",
+        "memory_type",
+    ]
     for field in index_fields:
         try:
             client.create_payload_index(

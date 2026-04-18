@@ -6,15 +6,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client.models import PointStruct
 
 from app.core import logger
 from app.core.embeddings import get_embeddings
+from app.core.genai import generate
 from app.core.graph import get_nebula_session
-from app.core.llm import get_llm
 from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
+from app.models.documents import Document
 from app.models.graph_schema import (
     EDGE_RELATED_TO,
     SPACE_NAME,
@@ -22,8 +21,15 @@ from app.models.graph_schema import (
     escape_ngql,
 )
 from app.models.schemas import CaseMetadata, FactMetadata, Triplet
+from app.pipelines.consolidation import classify_memory, run_consolidation_pipeline
 from app.pipelines.loaders import load_document
-from app.prompts.extraction import EXTRACTION_SYSTEM_PROMPT, EXTRACTION_USER_PROMPT
+from app.pipelines.text_splitter import split_documents
+from app.prompts.extraction import (
+    EXTRACTION_SYSTEM_PROMPT,
+    EXTRACTION_USER_PROMPT,
+    SUPPORT_EXTRACTION_SYSTEM_PROMPT,
+    SUPPORT_EXTRACTION_USER_PROMPT,
+)
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
@@ -31,13 +37,7 @@ EMBEDDING_BATCH_SIZE = 20
 
 
 def chunk_documents(documents: list[Document], source_file: str) -> list[Document]:
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
-        length_function=len,
-        separators=["\n\n", "\n", ". ", " ", ""],
-    )
-    chunks = splitter.split_documents(documents)
+    chunks = split_documents(documents, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
     for i, chunk in enumerate(chunks):
         chunk.metadata["chunk_id"] = str(uuid4())
         chunk.metadata["chunk_index"] = i
@@ -46,17 +46,18 @@ def chunk_documents(documents: list[Document], source_file: str) -> list[Documen
     return chunks
 
 
-def extract_triplets_from_chunk(chunk: Document) -> list[Triplet]:
-    llm = get_llm(temperature=0.0)
+def extract_triplets_from_chunk(
+    chunk: Document,
+    system: str = "support",
+) -> list[Triplet]:
     text = chunk.page_content
-    prompt = EXTRACTION_USER_PROMPT.format(text=text)
-    response = llm.invoke(
-        [
-            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ]
-    )
-    content = response.content.strip()
+    if system == "support":
+        system_prompt = SUPPORT_EXTRACTION_SYSTEM_PROMPT
+        user_prompt = SUPPORT_EXTRACTION_USER_PROMPT.format(text=text)
+    else:
+        system_prompt = EXTRACTION_SYSTEM_PROMPT
+        user_prompt = EXTRACTION_USER_PROMPT.format(text=text)
+    content = generate(prompt=user_prompt, system=system_prompt, temperature=0.0).strip()
     json_match = re.search(r"\[.*\]", content, re.DOTALL)
     if not json_match:
         logger.warning("no_json_array_found_in_llm_response", chunk_id=chunk.metadata.get("chunk_id"))
@@ -76,10 +77,10 @@ def extract_triplets_from_chunk(chunk: Document) -> list[Triplet]:
         return []
 
 
-def extract_triplets(chunks: list[Document]) -> list[tuple[Document, list[Triplet]]]:
+def extract_triplets(chunks: list[Document], system: str = "support") -> list[tuple[Document, list[Triplet]]]:
     all_results = []
     for chunk in chunks:
-        triplets = extract_triplets_from_chunk(chunk)
+        triplets = extract_triplets_from_chunk(chunk, system=system)
         all_results.append((chunk, triplets))
         logger.info(
             "chunk_extracted",
@@ -185,11 +186,15 @@ def store_in_vectorstore(
                 "created_at": batch_timestamp,
                 "ingestion_batch": ingestion_batch_id,
                 "system": system,
+                "is_active": True,
+                "memory_type": classify_memory(fact_meta_dict.get("fact_type"), system),
             }
             if fact_meta_dict.get("account_id"):
                 payload["account_id"] = fact_meta_dict["account_id"]
             if fact_meta_dict.get("tenant_id"):
                 payload["tenant_id"] = fact_meta_dict["tenant_id"]
+            if fact_meta_dict.get("user_id"):
+                payload["user_id"] = fact_meta_dict["user_id"]
             payload.update(case_meta_dict)
             payload.update(fact_meta_dict)
             all_payloads.append(payload)
@@ -229,7 +234,7 @@ def ingest_document(
 
     documents = load_document(file_path)
     chunks = chunk_documents(documents, source_file)
-    triplets_by_chunk = extract_triplets(chunks)
+    triplets_by_chunk = extract_triplets(chunks, system=system)
 
     total_triplets = sum(len(t) for _, t in triplets_by_chunk)
     logger.info("triplets_extracted", total=total_triplets)
@@ -243,9 +248,34 @@ def ingest_document(
             "status": "no_triplets",
         }
 
-    vertex_id_map = store_in_graph(triplets_by_chunk, source_file)
+    consolidated = run_consolidation_pipeline(
+        [
+            {"subject": t.subject, "predicate": t.predicate, "object": t.object}
+            for _, ts in triplets_by_chunk
+            for t in ts
+        ],
+        system=system,
+        source_doc=source_file,
+        case_metadata=case_metadata,
+        fact_metadata=fact_metadata,
+    )
+    logger.info("consolidation_applied", input=total_triplets, output=len(consolidated))
+
+    surviving_keys = {
+        f"{c.get('subject', '')}|{c.get('predicate', '')}|{c.get('object', '')}".lower() for c in consolidated
+    }
+    consolidated_triplets_by_chunk = []
+    for chunk, triplets in triplets_by_chunk:
+        filtered = [t for t in triplets if f"{t.subject}|{t.predicate}|{t.object}".lower() in surviving_keys]
+        if filtered:
+            consolidated_triplets_by_chunk.append((chunk, filtered))
+
+    deduped_count = sum(len(ts) for _, ts in consolidated_triplets_by_chunk)
+    logger.info("dedup_applied", original=total_triplets, deduped=deduped_count)
+
+    vertex_id_map = store_in_graph(consolidated_triplets_by_chunk, source_file)
     vector_count = store_in_vectorstore(
-        triplets_by_chunk,
+        consolidated_triplets_by_chunk,
         vertex_id_map,
         source_file,
         system=system,

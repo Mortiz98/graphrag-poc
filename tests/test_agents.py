@@ -99,7 +99,7 @@ class TestAccountTools:
         result = search_episodes("quarterly review", "ACC-1")
         assert "Meeting discussed Renewal" in result
 
-    @patch("app.agents.tools.account_tools.get_retrieval_engine")
+    @patch("app.core.account_store.get_retrieval_engine")
     def test_get_account_state(self, mock_get_engine):
         from app.agents.tools.account_tools import get_account_state
 
@@ -108,8 +108,8 @@ class TestAccountTools:
         mock_result.subject = "ACC-1"
         mock_result.predicate = "has_tier"
         mock_result.object = "Enterprise"
-        mock_result.metadata = {"fact_type": "fact", "valid_to": "present"}
-        mock_engine.search_dense.return_value = [mock_result]
+        mock_result.metadata = {"fact_type": "fact", "valid_from": "2024-01-01"}
+        mock_engine.search_by_filter.return_value = [mock_result]
         mock_get_engine.return_value = mock_engine
 
         result = get_account_state("ACC-1")
@@ -120,7 +120,7 @@ class TestAccountTools:
         from app.agents.tools.account_tools import get_commitments
 
         mock_engine = MagicMock()
-        mock_engine.search_dense.return_value = []
+        mock_engine.search_by_filter.return_value = []
         mock_get_engine.return_value = mock_engine
 
         result = get_commitments("ACC-1")
@@ -131,7 +131,7 @@ class TestAccountTools:
         from app.agents.tools.account_tools import get_stakeholder_map
 
         mock_engine = MagicMock()
-        mock_engine.search_dense.return_value = []
+        mock_engine.search_by_filter.return_value = []
         mock_get_engine.return_value = mock_engine
 
         result = get_stakeholder_map("ACC-1")
@@ -149,7 +149,7 @@ class TestAgentDefinitions:
         from app.agents.account_manager_agent import account_manager_agent
 
         assert account_manager_agent.name == "account_manager_agent"
-        assert len(account_manager_agent.tools) == 6
+        assert len(account_manager_agent.tools) == 10
 
 
 class TestAdkHealthCheck:

@@ -3,6 +3,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from google.adk.artifacts import InMemoryArtifactService
+from google.adk.memory import InMemoryMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
@@ -14,6 +16,8 @@ from app.core import logger
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 _session_service = InMemorySessionService()
+_artifact_service = InMemoryArtifactService()
+_memory_service = InMemoryMemoryService()
 
 _runners: dict[str, Runner] = {}
 
@@ -25,17 +29,21 @@ def _get_runner(agent_name: str) -> Runner:
             app_name="graphrag",
             agent=agent,
             session_service=_session_service,
+            artifact_service=_artifact_service,
+            memory_service=_memory_service,
         )
     return _runners[agent_name]
 
 
 async def _ensure_session(user_id: str, session_id: str | None = None) -> str:
-    if session_id is None:
-        session_id = str(uuid4())
-    try:
-        await _session_service.get_session(app_name="graphrag", user_id=user_id, session_id=session_id)
-    except Exception:
-        await _session_service.create_session(app_name="graphrag", user_id=user_id, session_id=session_id)
+    if session_id is not None:
+        try:
+            await _session_service.get_session(app_name="graphrag", user_id=user_id, session_id=session_id)
+            return session_id
+        except Exception:
+            pass
+    session_id = str(uuid4())
+    await _session_service.create_session(app_name="graphrag", user_id=user_id, session_id=session_id)
     return session_id
 
 
@@ -116,6 +124,38 @@ async def am_query(question: str, account_id: str, user_id: str = "default", ses
         return {"answer": answer, "session_id": sid, "account_id": account_id}
     except Exception as e:
         logger.error("am_agent_error", error=str(e))
+        raise HTTPException(status_code=503, detail=f"Agent error: {str(e)}")
+
+
+@router.post(
+    "/am/query/stream",
+    summary="Stream query to the Account Manager agent",
+    description="Same as /am/query but streams the response token-by-token using SSE.",
+)
+async def am_query_stream(question: str, account_id: str, user_id: str = "default", session_id: str | None = None):
+    try:
+        sid = await _ensure_session(user_id, session_id)
+        runner = _get_runner("am")
+        content = types.Content(role="user", parts=[types.Part(text=question)])
+
+        async def event_stream():
+            yield f"data: {json.dumps({'type': 'metadata', 'session_id': sid, 'account_id': account_id})}\n\n"
+            async for event in runner.run_async(
+                user_id=user_id,
+                session_id=sid,
+                new_message=content,
+                state_delta={"account_id": account_id},
+            ):
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            token_event = {"type": "token", "content": part.text}
+                            yield f"data: {json.dumps(token_event)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+    except Exception as e:
+        logger.error("am_agent_stream_error", error=str(e))
         raise HTTPException(status_code=503, detail=f"Agent error: {str(e)}")
 
 

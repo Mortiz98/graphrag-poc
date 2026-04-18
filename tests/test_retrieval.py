@@ -29,7 +29,7 @@ class TestSearchDenseWithScope:
     def test_scope_merged_into_filter(self, mock_ensure, mock_client, mock_embeddings):
         reset_retrieval_engine()
         mock_emb = MagicMock()
-        mock_emb.embed_query.return_value = [0.1] * 1536
+        mock_emb.embed_query.return_value = [0.1] * 768
         mock_embeddings.return_value = mock_emb
 
         mock_point = MagicMock()
