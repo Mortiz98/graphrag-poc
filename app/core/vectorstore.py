@@ -76,8 +76,8 @@ def _ensure_payload_indexes(client: QdrantClient, collection_name: str) -> None:
                 field_name=field,
                 field_schema=PayloadSchemaType.KEYWORD,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("payload_index_create_failed", field=field, error=str(e))
 
 
 def scroll_by_source_doc(
@@ -143,7 +143,7 @@ def get_unique_source_docs(
     return docs_by_name
 
 
-async def check_qdrant_health() -> bool:
+def check_qdrant_health() -> bool:
     try:
         client = get_qdrant_client()
         client.get_collections()

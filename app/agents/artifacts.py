@@ -81,9 +81,10 @@ def load_system_prompt(name: str) -> str | None:
 def list_system_prompts() -> list[str]:
     """List available system prompts."""
     try:
-        return _artifact_service.list_artifact_keys(
+        keys = _artifact_service.list_artifact_keys(
             app_name="graphrag",
         )
+        return [k for k in keys if k.startswith("prompts/")]
     except Exception:
         return []
 

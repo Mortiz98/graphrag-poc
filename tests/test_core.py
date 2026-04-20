@@ -1,4 +1,4 @@
-"""Unit tests for core modules (graph, vectorstore, llm, embeddings, genai)."""
+"""Unit tests for core modules (graph, vectorstore, genai)."""
 
 from unittest.mock import MagicMock, patch
 
@@ -32,35 +32,6 @@ class TestSettingsValidation:
         assert settings.is_gemini_configured is True
 
 
-class TestGetLLM:
-    @patch("app.config.get_settings")
-    def test_returns_llm_with_correct_temperature(self, mock_settings):
-        mock_settings.return_value = MagicMock(gemini_api_key="test-key", validate_api_key=MagicMock())
-        from app.core.llm import get_llm
-
-        reset_genai_client()
-        llm = get_llm(temperature=0.5)
-        assert llm.temperature == 0.5
-
-    @patch("app.config.get_settings")
-    def test_default_temperature(self, mock_settings):
-        mock_settings.return_value = MagicMock(gemini_api_key="test-key", validate_api_key=MagicMock())
-        from app.core.llm import get_llm
-
-        llm = get_llm()
-        assert llm.temperature == 0.0
-
-
-class TestGetEmbeddings:
-    @patch("app.config.get_settings")
-    def test_returns_embeddings_instance(self, mock_settings):
-        mock_settings.return_value = MagicMock(gemini_api_key="test-key", validate_api_key=MagicMock())
-        from app.core.embeddings import get_embeddings
-
-        emb = get_embeddings()
-        assert emb is not None
-
-
 class TestGetNebulaSession:
     @patch("app.core.graph._get_pool")
     def test_session_context_manager(self, mock_get_pool):
@@ -92,7 +63,7 @@ class TestGetNebulaSession:
 
 class TestCheckNebulaHealth:
     @patch("app.core.graph.get_nebula_session")
-    async def test_healthy(self, mock_session_ctx):
+    def test_healthy(self, mock_session_ctx):
         mock_session = MagicMock()
         mock_result = MagicMock()
         mock_result.is_succeeded.return_value = True
@@ -100,15 +71,15 @@ class TestCheckNebulaHealth:
         mock_session_ctx.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_session_ctx.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = await check_nebula_health()
+        result = check_nebula_health()
         assert result is True
 
     @patch("app.core.graph.get_nebula_session")
-    async def test_unhealthy(self, mock_session_ctx):
+    def test_unhealthy(self, mock_session_ctx):
         mock_session_ctx.return_value.__enter__ = MagicMock(side_effect=ConnectionError("fail"))
         mock_session_ctx.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = await check_nebula_health()
+        result = check_nebula_health()
         assert result is False
 
 

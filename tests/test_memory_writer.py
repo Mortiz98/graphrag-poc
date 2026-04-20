@@ -6,13 +6,11 @@ from app.pipelines.memory_writer import record_fact, supersede_fact, write_facts
 
 
 class TestWriteFactsToStore:
-    @patch("app.pipelines.memory_writer.get_embeddings")
+    @patch("app.pipelines.memory_writer.embed_documents")
     @patch("app.pipelines.memory_writer.get_qdrant_client")
     @patch("app.pipelines.memory_writer.ensure_collection_exists")
-    def test_writes_facts(self, mock_ensure, mock_client, mock_embeddings):
-        mock_emb = MagicMock()
-        mock_emb.embed_documents.return_value = [[0.1] * 768]
-        mock_embeddings.return_value = mock_emb
+    def test_writes_facts(self, mock_ensure, mock_client, mock_embed):
+        mock_embed.return_value = [[0.1] * 768]
         mock_qdrant = MagicMock()
         mock_client.return_value = mock_qdrant
 
@@ -42,6 +40,7 @@ class TestRecordFact:
         call_args = mock_write.call_args[0][0]
         assert call_args[0]["subject"] == "ACC-1"
         assert call_args[0]["system"] == "am"
+        assert call_args[0]["memory_type"] == "state"
 
     @patch("app.pipelines.memory_writer.write_facts_to_store", return_value=1)
     def test_fact_with_validity(self, mock_write):
@@ -73,7 +72,11 @@ class TestSupersedeFact:
             new_object="Premium",
             system="am",
             account_id="ACC-1",
+            reason="tier upgrade",
         )
         assert new_id is not None
-        mock_qdrant.set_payload.assert_called_once()
+        set_payload_call = mock_qdrant.set_payload.call_args
+        payload = set_payload_call.kwargs.get("payload") or set_payload_call[1].get("payload") or set_payload_call[0][0]
+        assert "supersede_reason" in payload
+        assert payload["supersede_reason"] == "tier upgrade"
         mock_write.assert_called_once()

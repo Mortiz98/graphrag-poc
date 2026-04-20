@@ -95,17 +95,17 @@ class TestGetUniqueSourceDocs:
 
 class TestCheckQdrantHealth:
     @patch("app.core.vectorstore.get_qdrant_client")
-    async def test_healthy(self, mock_get_client):
+    def test_healthy(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.get_collections.return_value = MagicMock(collections=[])
         mock_get_client.return_value = mock_client
 
-        result = await check_qdrant_health()
+        result = check_qdrant_health()
         assert result is True
 
     @patch("app.core.vectorstore.get_qdrant_client")
-    async def test_unhealthy(self, mock_get_client):
+    def test_unhealthy(self, mock_get_client):
         mock_get_client.side_effect = ConnectionError("fail")
 
-        result = await check_qdrant_health()
+        result = check_qdrant_health()
         assert result is False

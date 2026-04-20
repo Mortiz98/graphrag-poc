@@ -35,6 +35,20 @@ class TestRetrievalTools:
         result = search_knowledge_base("What is Python?")
         assert "Python is_a Language" in result
         assert "0.95" in result
+        call_kwargs = mock_engine.search_dense.call_args.kwargs
+        assert call_kwargs["active_only"] is True
+
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_search_knowledge_base_with_system(self, mock_get_engine):
+        from app.agents.tools.retrieval_tools import search_knowledge_base
+
+        mock_engine = MagicMock()
+        mock_engine.search_dense.return_value = []
+        mock_get_engine.return_value = mock_engine
+
+        search_knowledge_base("test", system="am")
+        call_kwargs = mock_engine.search_dense.call_args.kwargs
+        assert call_kwargs["scope"] == {"system": "am"}
 
     @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
     def test_search_knowledge_base_empty(self, mock_get_engine):
@@ -61,10 +75,11 @@ class TestRetrievalTools:
         mock_engine.search_dense.return_value = [mock_result]
         mock_get_engine.return_value = mock_engine
 
-        result = search_by_metadata("API timeout", product="API", severity="high")
+        result = search_by_metadata("API timeout", system="support", product="API", severity="high")
         assert "API has_error Timeout" in result
-        call_kwargs = mock_engine.search_dense.call_args
-        assert call_kwargs.kwargs["filters"] == {"product": "API", "severity": "high"}
+        call_kwargs = mock_engine.search_dense.call_args.kwargs
+        assert call_kwargs["filters"] == {"product": "API", "severity": "high"}
+        assert call_kwargs["active_only"] is True
 
     @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
     def test_traverse_issue_graph(self, mock_get_engine):

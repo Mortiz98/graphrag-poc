@@ -3,20 +3,20 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from google.adk.artifacts import InMemoryArtifactService
 from google.adk.memory import InMemoryMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from app.agents.account_manager_agent import account_manager_agent
+from app.agents.artifacts import get_artifact_service
 from app.agents.support_agent import support_agent
 from app.core import logger
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 _session_service = InMemorySessionService()
-_artifact_service = InMemoryArtifactService()
+_artifact_service = get_artifact_service()
 _memory_service = InMemoryMemoryService()
 
 _runners: dict[str, Runner] = {}

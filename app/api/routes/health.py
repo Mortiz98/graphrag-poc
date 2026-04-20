@@ -19,8 +19,8 @@ def _check_adk() -> bool:
 @router.get("/health")
 async def health_check():
     settings = get_settings()
-    qdrant_ok = await check_qdrant_health()
-    nebula_ok = await check_nebula_health()
+    qdrant_ok = check_qdrant_health()
+    nebula_ok = check_nebula_health()
 
     gemini_configured = settings.is_gemini_configured
     adk_ok = _check_adk()

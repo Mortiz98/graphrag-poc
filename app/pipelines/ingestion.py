@@ -1,5 +1,6 @@
 """Ingestion pipeline: document → chunks → triplets → graph + vectors."""
 
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -9,8 +10,7 @@ from uuid import uuid4
 from qdrant_client.models import PointStruct
 
 from app.core import logger
-from app.core.embeddings import get_embeddings
-from app.core.genai import generate
+from app.core.genai import embed_documents, generate
 from app.core.graph import get_nebula_session
 from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
 from app.models.documents import Document
@@ -95,7 +95,8 @@ def _sanitize_vertex_id(name: str) -> str:
     sanitized = sanitized.strip("_")
     if not sanitized or sanitized.isspace():
         return f"entity_{uuid4().hex[:8]}"
-    return sanitized[:256]
+    suffix = hashlib.md5(name.encode()).hexdigest()[:8]
+    return f"{sanitized[:247]}_{suffix}"
 
 
 def store_in_graph(
@@ -151,7 +152,6 @@ def store_in_vectorstore(
     settings = get_settings()
     client = get_qdrant_client()
     ensure_collection_exists(client, settings.qdrant_collection_name)
-    embeddings = get_embeddings()
 
     batch_timestamp = datetime.now(timezone.utc).isoformat()
     ingestion_batch_id = str(uuid4())[:8]
@@ -210,7 +210,7 @@ def store_in_vectorstore(
         batch_ids = all_ids[i : i + batch_size]
         batch_payloads = all_payloads[i : i + batch_size]
 
-        vectors = embeddings.embed_documents(batch_texts)
+        vectors = embed_documents(batch_texts)
 
         points = [
             PointStruct(id=bid, vector=vec, payload=payload)

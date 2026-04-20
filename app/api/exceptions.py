@@ -27,6 +27,6 @@ class UnsupportedFileTypeError(HTTPException):
 class NoTripletsError(HTTPException):
     def __init__(self, filename: str):
         super().__init__(
-            status_code=200,
+            status_code=204,
             detail=f"No triplets could be extracted from '{filename}'",
         )

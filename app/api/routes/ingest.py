@@ -86,7 +86,8 @@ async def ingest_file(
         )
 
     tmp_dir = tempfile.mkdtemp()
-    tmp_path = Path(tmp_dir) / file.filename
+    safe_name = Path(file.filename).name
+    tmp_path = Path(tmp_dir) / safe_name
     try:
         with open(tmp_path, "wb") as f:
             shutil.copyfileobj(file.file, f)

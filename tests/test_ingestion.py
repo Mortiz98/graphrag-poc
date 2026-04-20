@@ -18,19 +18,24 @@ from app.pipelines.ingestion import (
 
 class TestSanitizeVertexId:
     def test_simple_string(self):
-        assert _sanitize_vertex_id("Python") == "Python"
+        result = _sanitize_vertex_id("Python")
+        assert result.startswith("Python_")
+        assert len(result) > len("Python")
 
-    def test_spaces_replaced(self):
-        assert _sanitize_vertex_id("Guido van Rossum") == "Guido_van_Rossum"
+    def test_spaces_replaced_and_hash(self):
+        result = _sanitize_vertex_id("Guido van Rossum")
+        assert result.startswith("Guido_van_Rossum_")
+        assert len(result) == len("Guido_van_Rossum_") + 8
 
     def test_special_chars_replaced(self):
-        assert _sanitize_vertex_id("Qdrant, Inc.") == "Qdrant__Inc"
+        result = _sanitize_vertex_id("Qdrant, Inc.")
+        assert result.startswith("Qdrant__Inc_")
 
     def test_empty_string_returns_entity_prefix(self):
         result = _sanitize_vertex_id("")
         assert result.startswith("entity_")
 
-    def test_long_string_truncated(self):
+    def test_long_string_truncated_with_hash(self):
         result = _sanitize_vertex_id("A" * 300)
         assert len(result) <= 256
 
@@ -43,7 +48,13 @@ class TestSanitizeVertexId:
         assert result.startswith("entity_")
 
     def test_hyphen_replaced(self):
-        assert _sanitize_vertex_id("my-entity") == "my_entity"
+        result = _sanitize_vertex_id("my-entity")
+        assert result.startswith("my_entity_")
+
+    def test_collision_resistance(self):
+        r1 = _sanitize_vertex_id("ACME Corp")
+        r2 = _sanitize_vertex_id("ACME_Corp")
+        assert r1 != r2
 
 
 class TestChunkDocuments:
@@ -174,11 +185,9 @@ class TestStoreInGraph:
 class TestStoreInVectorstore:
     @patch("app.pipelines.ingestion.get_qdrant_client")
     @patch("app.pipelines.ingestion.ensure_collection_exists")
-    @patch("app.pipelines.ingestion.get_embeddings")
-    def test_stores_vectors(self, mock_embeddings, mock_ensure, mock_client):
-        mock_emb = MagicMock()
-        mock_emb.embed_documents.return_value = [[0.1] * 768]
-        mock_embeddings.return_value = mock_emb
+    @patch("app.pipelines.ingestion.embed_documents")
+    def test_stores_vectors(self, mock_embed, mock_ensure, mock_client):
+        mock_embed.return_value = [[0.1] * 768]
 
         mock_qdrant = MagicMock()
         mock_client.return_value = mock_qdrant
@@ -197,8 +206,8 @@ class TestStoreInVectorstore:
 
     @patch("app.pipelines.ingestion.get_qdrant_client")
     @patch("app.pipelines.ingestion.ensure_collection_exists")
-    @patch("app.pipelines.ingestion.get_embeddings")
-    def test_no_triplets_returns_zero(self, mock_embeddings, mock_ensure, mock_client):
+    @patch("app.pipelines.ingestion.embed_documents")
+    def test_no_triplets_returns_zero(self, mock_embed, mock_ensure, mock_client):
         count = store_in_vectorstore([], {}, "test.txt")
         assert count == 0
 

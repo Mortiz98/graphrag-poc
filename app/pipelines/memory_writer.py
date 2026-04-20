@@ -6,8 +6,9 @@ from uuid import uuid4
 from qdrant_client.models import PointStruct
 
 from app.core import logger
-from app.core.embeddings import get_embeddings
+from app.core.genai import embed_documents
 from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
+from app.pipelines.consolidation import classify_memory
 
 
 def write_facts_to_store(
@@ -22,8 +23,6 @@ def write_facts_to_store(
     settings = get_settings()
     client = get_qdrant_client()
     ensure_collection_exists(client, settings.qdrant_collection_name)
-    embeddings = get_embeddings()
-
     all_texts = []
     all_payloads = []
     all_ids = []
@@ -42,7 +41,7 @@ def write_facts_to_store(
         batch_ids = all_ids[i : i + batch_size]
         batch_payloads = all_payloads[i : i + batch_size]
 
-        vectors = embeddings.embed_documents(batch_texts)
+        vectors = embed_documents(batch_texts)
 
         points = [
             PointStruct(id=bid, vector=vec, payload=payload)
@@ -85,7 +84,7 @@ def record_fact(
         "confidence": confidence,
         "source_doc": source_doc,
         "created_at": now,
-        "memory_type": fact_type,
+        "memory_type": classify_memory(fact_type, system),
         "is_active": True,
     }
 
@@ -119,9 +118,12 @@ def supersede_fact(
 
         settings = get_settings()
         client = get_qdrant_client()
+        payload = {"valid_to": now, "superseded_by": new_id, "is_active": False}
+        if reason:
+            payload["supersede_reason"] = reason
         client.set_payload(
             collection_name=settings.qdrant_collection_name,
-            payload={"valid_to": now, "superseded_by": new_id, "is_active": False},
+            payload=payload,
             points=[old_fact_id],
         )
         logger.info("fact_superseded", old_id=old_fact_id, new_id=new_id)

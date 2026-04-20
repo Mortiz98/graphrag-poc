@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, HTTPException
@@ -65,12 +66,21 @@ async def query_endpoint(request: QueryRequest):
 )
 async def query_stream_endpoint(request: QueryRequest):
     try:
+        filters = dict(request.filters) if request.filters else {}
+        scope = dict(request.scope) if request.scope else {}
+        if request.account_id:
+            scope["account_id"] = request.account_id
+        if request.tenant_id:
+            scope["tenant_id"] = request.tenant_id
+        if request.user_id:
+            scope["user_id"] = request.user_id
+
         vector_results = search_similar_triplets(
             request.question,
             top_k=request.top_k,
             min_score=request.min_score,
-            filters=request.filters,
-            scope=request.scope,
+            filters=filters or None,
+            scope=scope or None,
             active_only=request.active_only,
         )
 
@@ -81,7 +91,7 @@ async def query_stream_endpoint(request: QueryRequest):
 
         graph_results = traverse_graph(entity_ids, hop_depth=1)
 
-        context, fused_results = _fuse_context(vector_results, graph_results)
+        context, fused_results = await asyncio.to_thread(_fuse_context, vector_results, graph_results)
 
         if not context.strip():
             context = "No relevant context found."

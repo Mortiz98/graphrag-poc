@@ -13,10 +13,24 @@ from uuid import uuid4
 
 from app.config import get_settings
 from app.core import logger
-from app.core.embeddings import get_embeddings
+from app.core.genai import embed_query
 from app.core.graph import get_nebula_session
 from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
 from app.models.graph_schema import EDGE_RELATED_TO, SPACE_NAME, TAG_ENTITY, escape_ngql
+
+_PAYLOAD_RESERVED_KEYS = frozenset(
+    [
+        "subject",
+        "predicate",
+        "object",
+        "subject_id",
+        "object_id",
+        "chunk_id",
+        "source_doc",
+        "subject_type",
+        "object_type",
+    ]
+)
 
 TRACES_DIR = Path("traces")
 TRACES_DIR.mkdir(exist_ok=True)
@@ -78,6 +92,29 @@ def persist_trace(trace: RetrievalTrace) -> None:
         logger.warning("trace_persist_failed", error=str(e))
 
 
+def _payload_to_result(
+    payload: dict,
+    score: float,
+    method: str,
+    scope: dict | None = None,
+) -> SearchResult:
+    return SearchResult(
+        subject=payload.get("subject", ""),
+        predicate=payload.get("predicate", ""),
+        object=payload.get("object", ""),
+        score=score,
+        source_doc=payload.get("source_doc", ""),
+        chunk_id=payload.get("chunk_id", ""),
+        subject_id=payload.get("subject_id", ""),
+        object_id=payload.get("object_id", ""),
+        subject_type=payload.get("subject_type", ""),
+        object_type=payload.get("object_type", ""),
+        metadata={k: v for k, v in payload.items() if k not in _PAYLOAD_RESERVED_KEYS},
+        retrieval_method=method,
+        scope=scope or {},
+    )
+
+
 class RetrievalEngine:
     """Unified retrieval engine for vector and graph search.
 
@@ -88,7 +125,6 @@ class RetrievalEngine:
     def __init__(self):
         self.settings = get_settings()
         self._vector_client = None
-        self._embeddings = None
 
     def _get_vector_client(self):
         """Lazy initialization of Qdrant client."""
@@ -96,12 +132,6 @@ class RetrievalEngine:
             self._vector_client = get_qdrant_client()
             ensure_collection_exists(self._vector_client, self.settings.qdrant_collection_name)
         return self._vector_client
-
-    def _get_embeddings(self):
-        """Lazy initialization of embeddings model."""
-        if self._embeddings is None:
-            self._embeddings = get_embeddings()
-        return self._embeddings
 
     def _build_filter(
         self,
@@ -132,9 +162,8 @@ class RetrievalEngine:
         active_only: bool = False,
     ) -> list[SearchResult]:
         client = self._get_vector_client()
-        embeddings = self._get_embeddings()
 
-        query_vector = embeddings.embed_query(query)
+        query_vector = embed_query(query)
         query_filter = self._build_filter(filters, scope, active_only=active_only)
 
         results = client.query_points(
@@ -148,37 +177,7 @@ class RetrievalEngine:
 
         search_results = []
         for point in results.points:
-            result = SearchResult(
-                subject=point.payload.get("subject", ""),
-                predicate=point.payload.get("predicate", ""),
-                object=point.payload.get("object", ""),
-                score=point.score,
-                source_doc=point.payload.get("source_doc", ""),
-                chunk_id=point.payload.get("chunk_id", ""),
-                subject_id=point.payload.get("subject_id", ""),
-                object_id=point.payload.get("object_id", ""),
-                subject_type=point.payload.get("subject_type", ""),
-                object_type=point.payload.get("object_type", ""),
-                metadata={
-                    k: v
-                    for k, v in point.payload.items()
-                    if k
-                    not in [
-                        "subject",
-                        "predicate",
-                        "object",
-                        "subject_id",
-                        "object_id",
-                        "chunk_id",
-                        "source_doc",
-                        "subject_type",
-                        "object_type",
-                    ]
-                },
-                retrieval_method="dense",
-                scope=scope or {},
-            )
-            search_results.append(result)
+            search_results.append(_payload_to_result(point.payload, point.score, "dense", scope))
 
         logger.info(
             "vector_search_completed",
@@ -242,38 +241,7 @@ class RetrievalEngine:
 
         search_results = []
         for point in results[0]:
-            search_results.append(
-                SearchResult(
-                    subject=point.payload.get("subject", ""),
-                    predicate=point.payload.get("predicate", ""),
-                    object=point.payload.get("object", ""),
-                    score=1.0,
-                    source_doc=point.payload.get("source_doc", ""),
-                    chunk_id=point.payload.get("chunk_id", ""),
-                    subject_id=point.payload.get("subject_id", ""),
-                    object_id=point.payload.get("object_id", ""),
-                    subject_type=point.payload.get("subject_type", ""),
-                    object_type=point.payload.get("object_type", ""),
-                    metadata={
-                        k: v
-                        for k, v in point.payload.items()
-                        if k
-                        not in [
-                            "subject",
-                            "predicate",
-                            "object",
-                            "subject_id",
-                            "object_id",
-                            "chunk_id",
-                            "source_doc",
-                            "subject_type",
-                            "object_type",
-                        ]
-                    },
-                    retrieval_method="filter",
-                    scope=scope or {},
-                )
-            )
+            search_results.append(_payload_to_result(point.payload, 1.0, "filter", scope))
 
         logger.info(
             "filter_search_completed",
@@ -303,22 +271,7 @@ class RetrievalEngine:
 
         search_results = []
         for point in results[0]:
-            search_results.append(
-                SearchResult(
-                    subject=point.payload.get("subject", ""),
-                    predicate=point.payload.get("predicate", ""),
-                    object=point.payload.get("object", ""),
-                    score=1.0,
-                    source_doc=point.payload.get("source_doc", ""),
-                    chunk_id=point.payload.get("chunk_id", ""),
-                    subject_id=point.payload.get("subject_id", ""),
-                    object_id=point.payload.get("object_id", ""),
-                    subject_type=point.payload.get("subject_type", ""),
-                    object_type=point.payload.get("object_type", ""),
-                    metadata=point.payload,
-                    retrieval_method="chunk_lookup",
-                )
-            )
+            search_results.append(_payload_to_result(point.payload, 1.0, "chunk_lookup"))
 
         logger.info("supporting_chunks_retrieved", requested=len(ids), found=len(search_results))
         return search_results

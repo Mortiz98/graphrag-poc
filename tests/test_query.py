@@ -113,15 +113,13 @@ class TestComputeConfidence:
 
 
 class TestSearchSimilarTriplets:
-    @patch("app.core.retrieval.get_embeddings")
+    @patch("app.core.retrieval.embed_query")
     @patch("app.core.retrieval.get_qdrant_client")
     @patch("app.core.retrieval.ensure_collection_exists")
-    def test_returns_triplets(self, mock_ensure, mock_client, mock_embeddings):
+    def test_returns_triplets(self, mock_ensure, mock_client, mock_embed):
         reset_retrieval_engine()
 
-        mock_emb = MagicMock()
-        mock_emb.embed_query.return_value = [0.1] * 768
-        mock_embeddings.return_value = mock_emb
+        mock_embed.return_value = [0.1] * 768
 
         mock_point = MagicMock()
         mock_point.payload = {
