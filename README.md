@@ -1,6 +1,6 @@
 # GraphRAG PoC
 
-Sistema híbrido de memoria para dos sistemas agentivos — Google ADK + Qdrant + NebulaGraph + Gemini.
+Sistema híbrido de memoria para dos sistemas agenciales — Google ADK + Qdrant + NebulaGraph + Gemini.
 
 ## Sistemas
 
