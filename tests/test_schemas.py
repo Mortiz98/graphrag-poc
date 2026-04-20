@@ -6,6 +6,9 @@ import pytest
 
 from app.models.graph_schema import escape_ngql
 from app.models.schemas import (
+    CaseMetadata,
+    FactMetadata,
+    IngestRequest,
     IngestResponse,
     QueryRequest,
     QueryResponse,
@@ -139,3 +142,86 @@ class TestEscapeNgql:
         malicious = '\\"; DROP VERTEX *; --'
         result = escape_ngql(malicious)
         assert result == '\\\\\\"; DROP VERTEX *; --'
+
+
+class TestCaseMetadata:
+    def test_all_none_defaults(self):
+        m = CaseMetadata()
+        assert m.case_id is None
+        assert m.product is None
+
+    def test_with_values(self):
+        m = CaseMetadata(case_id="CASE-1", product="API", severity="high")
+        assert m.case_id == "CASE-1"
+        assert m.severity == "high"
+
+    def test_serialization_excludes_none(self):
+        m = CaseMetadata(case_id="CASE-1")
+        d = m.model_dump(exclude_none=True)
+        assert "case_id" in d
+        assert "product" not in d
+
+
+class TestFactMetadata:
+    def test_all_none_defaults(self):
+        m = FactMetadata()
+        assert m.account_id is None
+        assert m.fact_type is None
+
+    def test_with_values(self):
+        m = FactMetadata(account_id="ACC-1", fact_type="episode", confidence=0.9)
+        assert m.account_id == "ACC-1"
+        assert m.confidence == 0.9
+
+    def test_serialization_excludes_none(self):
+        m = FactMetadata(account_id="ACC-1")
+        d = m.model_dump(exclude_none=True)
+        assert "account_id" in d
+        assert "fact_type" not in d
+
+
+class TestIngestRequest:
+    def test_defaults(self):
+        req = IngestRequest(filename="test.txt")
+        assert req.system == "support"
+        assert req.case_metadata is None
+        assert req.fact_metadata is None
+
+    def test_with_system_am(self):
+        req = IngestRequest(filename="notes.txt", system="am")
+        assert req.system == "am"
+
+    def test_with_case_metadata(self):
+        req = IngestRequest(
+            filename="ticket.txt",
+            system="support",
+            case_metadata=CaseMetadata(case_id="C-1", product="API"),
+        )
+        assert req.case_metadata.case_id == "C-1"
+
+    def test_with_fact_metadata(self):
+        req = IngestRequest(
+            filename="meeting.txt",
+            system="am",
+            fact_metadata=FactMetadata(account_id="ACC-1", fact_type="episode"),
+        )
+        assert req.fact_metadata.account_id == "ACC-1"
+
+
+class TestQueryRequestExtended:
+    def test_scope_field(self):
+        req = QueryRequest(question="test", scope={"system": "support"})
+        assert req.scope == {"system": "support"}
+
+    def test_account_id_field(self):
+        req = QueryRequest(question="test", account_id="ACC-1")
+        assert req.account_id == "ACC-1"
+
+    def test_both_scope_and_account(self):
+        req = QueryRequest(
+            question="test",
+            scope={"system": "am"},
+            account_id="ACC-1",
+        )
+        assert req.scope["system"] == "am"
+        assert req.account_id == "ACC-1"

@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+from app.core.retrieval import SearchResult, reset_retrieval_engine
 from app.pipelines.query import (
     _compute_confidence,
     _fuse_context,
@@ -12,23 +13,41 @@ from app.pipelines.query import (
 )
 
 
+def make_search_result(**kwargs) -> SearchResult:
+    defaults = {
+        "subject": "",
+        "predicate": "",
+        "object": "",
+        "score": 0.0,
+        "source_doc": "",
+        "chunk_id": "",
+        "subject_id": "",
+        "object_id": "",
+        "metadata": {},
+        "retrieval_method": "",
+        "scope": {},
+    }
+    defaults.update(kwargs)
+    return SearchResult(**defaults)
+
+
 class TestFuseContext:
     def test_deduplication(self):
         vector_triplets = [
-            {"subject": "Python", "predicate": "is_a", "object": "Language"},
+            make_search_result(subject="Python", predicate="is_a", object="Language"),
         ]
         graph_triplets = [
-            {"subject": "Python", "predicate": "is_a", "object": "Language"},
+            make_search_result(subject="Python", predicate="is_a", object="Language"),
         ]
         context, fused = _fuse_context(vector_triplets, graph_triplets)
         assert len(fused) == 1
 
     def test_different_triplets_combined(self):
         vector_triplets = [
-            {"subject": "Python", "predicate": "created_by", "object": "Guido"},
+            make_search_result(subject="Python", predicate="created_by", object="Guido"),
         ]
         graph_triplets = [
-            {"subject": "Python", "predicate": "is_a", "object": "Language"},
+            make_search_result(subject="Python", predicate="is_a", object="Language"),
         ]
         context, fused = _fuse_context(vector_triplets, graph_triplets)
         assert len(fused) == 2
@@ -42,8 +61,8 @@ class TestFuseContext:
 
     def test_context_format(self):
         triplets = [
-            {"subject": "A", "predicate": "b", "object": "C"},
-            {"subject": "D", "predicate": "e", "object": "F"},
+            make_search_result(subject="A", predicate="b", object="C"),
+            make_search_result(subject="D", predicate="e", object="F"),
         ]
         context, fused = _fuse_context(triplets, [])
         assert "- A b C" in context
@@ -51,14 +70,14 @@ class TestFuseContext:
 
     def test_vector_triplets_come_first(self):
         vector_triplets = [
-            {"subject": "V", "predicate": "pv", "object": "VV"},
+            make_search_result(subject="V", predicate="pv", object="VV"),
         ]
         graph_triplets = [
-            {"subject": "G", "predicate": "pg", "object": "GG"},
+            make_search_result(subject="G", predicate="pg", object="GG"),
         ]
         context, fused = _fuse_context(vector_triplets, graph_triplets)
-        assert fused[0]["subject"] == "V"
-        assert fused[1]["subject"] == "G"
+        assert fused[0].subject == "V"
+        assert fused[1].subject == "G"
 
 
 class TestComputeConfidence:
@@ -66,41 +85,41 @@ class TestComputeConfidence:
         assert _compute_confidence([], 0) == 0.0
 
     def test_high_similarity(self):
-        triplets = [{"score": 0.95}] * 3
+        triplets = [make_search_result(score=0.95) for _ in range(3)]
         confidence = _compute_confidence(triplets, 5)
         assert confidence > 0.5
         assert confidence <= 1.0
 
     def test_low_similarity(self):
-        triplets = [{"score": 0.1}]
+        triplets = [make_search_result(score=0.1)]
         confidence = _compute_confidence(triplets, 1)
         assert confidence < 0.5
 
     def test_no_scores(self):
-        triplets = [{}]
+        triplets = [make_search_result(score=0.0)]
         confidence = _compute_confidence(triplets, 1)
         assert 0.0 <= confidence <= 1.0
 
     def test_confidence_bounded(self):
-        triplets = [{"score": 0.0}]
+        triplets = [make_search_result(score=0.0)]
         confidence = _compute_confidence(triplets, 0)
         assert confidence >= 0.0
 
     def test_coverage_factor_increases_confidence(self):
-        triplets = [{"score": 0.8}]
+        triplets = [make_search_result(score=0.8)]
         low_coverage = _compute_confidence(triplets, 1)
         high_coverage = _compute_confidence(triplets, 10)
         assert high_coverage >= low_coverage
 
 
 class TestSearchSimilarTriplets:
-    @patch("app.pipelines.query.get_embeddings")
-    @patch("app.pipelines.query.get_qdrant_client")
-    @patch("app.pipelines.query.ensure_collection_exists")
-    def test_returns_triplets(self, mock_ensure, mock_client, mock_embeddings):
-        mock_emb = MagicMock()
-        mock_emb.embed_query.return_value = [0.1] * 1536
-        mock_embeddings.return_value = mock_emb
+    @patch("app.core.retrieval.embed_query")
+    @patch("app.core.retrieval.get_qdrant_client")
+    @patch("app.core.retrieval.ensure_collection_exists")
+    def test_returns_triplets(self, mock_ensure, mock_client, mock_embed):
+        reset_retrieval_engine()
+
+        mock_embed.return_value = [0.1] * 768
 
         mock_point = MagicMock()
         mock_point.payload = {
@@ -122,8 +141,8 @@ class TestSearchSimilarTriplets:
 
         results = search_similar_triplets("What is Python?")
         assert len(results) == 1
-        assert results[0]["score"] == 0.95
-        assert results[0]["subject"] == "Python"
+        assert results[0].score == 0.95
+        assert results[0].subject == "Python"
 
 
 class TestTraverseGraph:
@@ -131,7 +150,7 @@ class TestTraverseGraph:
         result = traverse_graph([])
         assert result == []
 
-    @patch("app.pipelines.query.get_nebula_session")
+    @patch("app.core.retrieval.get_nebula_session")
     def test_successful_traversal(self, mock_session_ctx):
         mock_session = MagicMock()
         mock_session_ctx.return_value.__enter__ = MagicMock(return_value=mock_session)
@@ -141,7 +160,7 @@ class TestTraverseGraph:
         mock_row.values = [MagicMock(), MagicMock(), MagicMock()]
         mock_row.values[0].get_sVal.return_value = b"Python"
         mock_row.values[1].get_sVal.return_value = b"Language"
-        mock_row.values[2].get_sVal.return_value = b"is_a"
+        mock_row.values[2].get_sVal.return_value = b"related_to"
 
         go_result = MagicMock()
         go_result.is_succeeded.return_value = True
@@ -149,13 +168,19 @@ class TestTraverseGraph:
 
         failed_result = MagicMock()
         failed_result.is_succeeded.return_value = False
+        failed_result.rows.return_value = []
 
-        mock_session.execute.side_effect = [go_result, go_result, failed_result, failed_result]
+        def execute_side_effect(query):
+            if "GO FROM" in query and "OVER related_to" in query and "REVERSELY" not in query:
+                return go_result
+            return failed_result
+
+        mock_session.execute.side_effect = execute_side_effect
 
         results = traverse_graph(["Python"])
         assert len(results) >= 1
 
-    @patch("app.pipelines.query.get_nebula_session")
+    @patch("app.core.retrieval.get_nebula_session")
     def test_failed_query_returns_empty(self, mock_session_ctx):
         mock_session = MagicMock()
         mock_session_ctx.return_value.__enter__ = MagicMock(return_value=mock_session)
@@ -170,22 +195,18 @@ class TestTraverseGraph:
 
 
 class TestGenerateAnswer:
-    @patch("app.pipelines.query.get_llm")
-    def test_returns_answer(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = "Python is a programming language."
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
+    @patch("app.pipelines.query.generate")
+    def test_returns_answer(self, mock_generate):
+        mock_generate.return_value = "Python is a programming language."
 
         answer = generate_answer("What is Python?", "- Python is_a Language")
         assert answer == "Python is a programming language."
 
-    @patch("app.pipelines.query.get_llm")
-    def test_empty_context_returns_default(self, mock_get_llm):
+    @patch("app.pipelines.query.generate")
+    def test_empty_context_returns_default(self, mock_generate):
         answer = generate_answer("What is Python?", "")
         assert "could not find" in answer.lower()
-        mock_get_llm.assert_not_called()
+        mock_generate.assert_not_called()
 
 
 class TestQuery:
@@ -195,16 +216,16 @@ class TestQuery:
     @patch("app.pipelines.query.search_similar_triplets")
     def test_full_query(self, mock_search, mock_traverse, mock_conf, mock_answer):
         mock_search.return_value = [
-            {
-                "subject": "Python",
-                "predicate": "is_a",
-                "object": "Language",
-                "subject_id": "Python",
-                "object_id": "Language",
-                "chunk_id": "c1",
-                "source_doc": "test.txt",
-                "score": 0.95,
-            }
+            make_search_result(
+                subject="Python",
+                predicate="is_a",
+                object="Language",
+                subject_id="Python",
+                object_id="Language",
+                chunk_id="c1",
+                source_doc="test.txt",
+                score=0.95,
+            )
         ]
         mock_answer.return_value = "Python is a language."
 

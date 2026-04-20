@@ -72,7 +72,7 @@ def get_nebula_session():
     return NebulaSession()
 
 
-async def check_nebula_health() -> bool:
+def check_nebula_health() -> bool:
     try:
         with get_nebula_session() as session:
             result = session.execute("SHOW HOSTS")

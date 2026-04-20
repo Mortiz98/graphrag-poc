@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import httpx
@@ -29,6 +30,12 @@ class QueryResult:
     sources: list[dict]
     entities_found: list[str]
     confidence: float
+
+
+@dataclass
+class AgentQueryResult:
+    answer: str
+    session_id: str
 
 
 @dataclass
@@ -94,6 +101,47 @@ class ApiClient:
                 status=data["status"],
             )
 
+    def ingest_with_metadata(
+        self,
+        filename: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
+        system: str = "support",
+        tenant_id: str | None = None,
+        account_id: str | None = None,
+        product: str | None = None,
+        version: str | None = None,
+        severity: str | None = None,
+        channel: str | None = None,
+    ) -> IngestResult:
+        with self._client() as c:
+            data: dict = {"system": system}
+            if tenant_id:
+                data["tenant_id"] = tenant_id
+            if account_id:
+                data["account_id"] = account_id
+            if product:
+                data["product"] = product
+            if version:
+                data["version"] = version
+            if severity:
+                data["severity"] = severity
+            if channel:
+                data["channel"] = channel
+            resp = c.post(
+                "/ingest",
+                data=data,
+                files={"file": (filename, content, content_type)},
+            )
+            resp.raise_for_status()
+            resp_data = resp.json()
+            return IngestResult(
+                filename=resp_data["filename"],
+                chunks_count=resp_data["chunks_count"],
+                triplets_count=resp_data["triplets_count"],
+                status=resp_data["status"],
+            )
+
     def seed(self) -> IngestResult:
         with self._client() as c:
             resp = c.post("/seed")
@@ -106,29 +154,68 @@ class ApiClient:
                 status=data["status"],
             )
 
-    def query(self, question: str, top_k: int = 5) -> QueryResult:
+    def agent_query(
+        self,
+        question: str,
+        agent: str = "support",
+        session_id: str | None = None,
+        account_id: str | None = None,
+    ) -> AgentQueryResult:
         with self._client() as c:
-            resp = c.post("/query", json={"question": question, "top_k": top_k})
+            if agent == "am":
+                payload = {"question": question, "user_id": "streamlit_user"}
+                if account_id:
+                    payload["account_id"] = account_id
+                if session_id:
+                    payload["session_id"] = session_id
+                resp = c.post("/agents/am/query", params=payload)
+            else:
+                payload = {"question": question, "user_id": "streamlit_user"}
+                if session_id:
+                    payload["session_id"] = session_id
+                resp = c.post("/agents/support/query", params=payload)
             resp.raise_for_status()
             data = resp.json()
-            return QueryResult(
-                answer=data["answer"],
-                sources=data["sources"],
-                entities_found=data["entities_found"],
-                confidence=data["confidence"],
+            return AgentQueryResult(
+                answer=data.get("answer", ""),
+                session_id=data.get("session_id", ""),
             )
 
-    def query_stream(self, question: str, top_k: int = 5):
+    def agent_query_stream(
+        self,
+        question: str,
+        agent: str = "support",
+        session_id: str | None = None,
+        account_id: str | None = None,
+    ):
         with self._client() as c:
-            with c.stream("POST", "/query/stream", json={"question": question, "top_k": top_k}) as resp:
+            if agent == "am":
+                params = {"question": question, "user_id": "streamlit_user"}
+                if account_id:
+                    params["account_id"] = account_id
+                if session_id:
+                    params["session_id"] = session_id
+                url = "/agents/am/query/stream"
+            else:
+                params = {"question": question, "user_id": "streamlit_user"}
+                if session_id:
+                    params["session_id"] = session_id
+                url = "/agents/support/query/stream"
+
+            with c.stream("POST", url, params=params) as resp:
                 resp.raise_for_status()
                 for line in resp.iter_lines():
-                    if line:
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
+                    if line and line.startswith("data: "):
+                        data_str = line[6:]
+                        try:
+                            event = json.loads(data_str)
+                            yield event
+                            if event.get("type") == "done":
                                 break
-                            yield data
+                        except json.JSONDecodeError:
+                            if data_str == "[DONE]":
+                                break
+                            yield {"type": "token", "content": data_str}
 
     def list_documents(self) -> list[DocumentInfo]:
         with self._client() as c:

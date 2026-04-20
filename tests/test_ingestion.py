@@ -3,10 +3,11 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from langchain_core.documents import Document
-
+from app.models.documents import Document
 from app.models.schemas import Triplet
 from app.pipelines.ingestion import (
+    _build_edge_insert,
+    _build_vertex_insert,
     _sanitize_vertex_id,
     chunk_documents,
     extract_triplets,
@@ -19,19 +20,24 @@ from app.pipelines.ingestion import (
 
 class TestSanitizeVertexId:
     def test_simple_string(self):
-        assert _sanitize_vertex_id("Python") == "Python"
+        result = _sanitize_vertex_id("Python")
+        assert result.startswith("Python_")
+        assert len(result) > len("Python")
 
-    def test_spaces_replaced(self):
-        assert _sanitize_vertex_id("Guido van Rossum") == "Guido_van_Rossum"
+    def test_spaces_replaced_and_hash(self):
+        result = _sanitize_vertex_id("Guido van Rossum")
+        assert result.startswith("Guido_van_Rossum_")
+        assert len(result) == len("Guido_van_Rossum_") + 8
 
     def test_special_chars_replaced(self):
-        assert _sanitize_vertex_id("Qdrant, Inc.") == "Qdrant__Inc"
+        result = _sanitize_vertex_id("Qdrant, Inc.")
+        assert result.startswith("Qdrant__Inc_")
 
     def test_empty_string_returns_entity_prefix(self):
         result = _sanitize_vertex_id("")
         assert result.startswith("entity_")
 
-    def test_long_string_truncated(self):
+    def test_long_string_truncated_with_hash(self):
         result = _sanitize_vertex_id("A" * 300)
         assert len(result) <= 256
 
@@ -44,7 +50,13 @@ class TestSanitizeVertexId:
         assert result.startswith("entity_")
 
     def test_hyphen_replaced(self):
-        assert _sanitize_vertex_id("my-entity") == "my_entity"
+        result = _sanitize_vertex_id("my-entity")
+        assert result.startswith("my_entity_")
+
+    def test_collision_resistance(self):
+        r1 = _sanitize_vertex_id("ACME Corp")
+        r2 = _sanitize_vertex_id("ACME_Corp")
+        assert r1 != r2
 
 
 class TestChunkDocuments:
@@ -68,16 +80,12 @@ class TestChunkDocuments:
 
 
 class TestExtractTripletsFromChunk:
-    @patch("app.pipelines.ingestion.get_llm")
-    def test_valid_json_response(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = (
+    @patch("app.pipelines.ingestion.generate")
+    def test_valid_json_response(self, mock_generate):
+        mock_generate.return_value = (
             '[{"subject":"Python","subject_type":"Technology",'
             '"predicate":"is_a","object":"Language","object_type":"Concept"}]'
         )
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
 
         chunk = Document(page_content="Python is a language", metadata={"chunk_id": "test"})
         triplets = extract_triplets_from_chunk(chunk)
@@ -86,49 +94,33 @@ class TestExtractTripletsFromChunk:
         assert triplets[0].subject == "Python"
         assert triplets[0].predicate == "is_a"
 
-    @patch("app.pipelines.ingestion.get_llm")
-    def test_no_json_in_response(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = "No entities found here"
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
+    @patch("app.pipelines.ingestion.generate")
+    def test_no_json_in_response(self, mock_generate):
+        mock_generate.return_value = "No entities found here"
 
         chunk = Document(page_content="Random text", metadata={"chunk_id": "test"})
         triplets = extract_triplets_from_chunk(chunk)
         assert triplets == []
 
-    @patch("app.pipelines.ingestion.get_llm")
-    def test_invalid_triplet_skipped(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = '[{"subject":"Python"},{"subject":"A","predicate":"b","object":"C"}]'
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
+    @patch("app.pipelines.ingestion.generate")
+    def test_invalid_triplet_skipped(self, mock_generate):
+        mock_generate.return_value = '[{"subject":"Python"},{"subject":"A","predicate":"b","object":"C"}]'
 
         chunk = Document(page_content="Text", metadata={"chunk_id": "test"})
         triplets = extract_triplets_from_chunk(chunk)
         assert len(triplets) == 1
 
-    @patch("app.pipelines.ingestion.get_llm")
-    def test_json_with_markdown_wrapper(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = '```json\n[{"subject":"X","predicate":"y","object":"Z"}]\n```'
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
+    @patch("app.pipelines.ingestion.generate")
+    def test_json_with_markdown_wrapper(self, mock_generate):
+        mock_generate.return_value = '```json\n[{"subject":"X","predicate":"y","object":"Z"}]\n```'
 
         chunk = Document(page_content="Text", metadata={"chunk_id": "test"})
         triplets = extract_triplets_from_chunk(chunk)
         assert len(triplets) == 1
 
-    @patch("app.pipelines.ingestion.get_llm")
-    def test_empty_json_array(self, mock_get_llm):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = "[]"
-        mock_llm.invoke.return_value = mock_response
-        mock_get_llm.return_value = mock_llm
+    @patch("app.pipelines.ingestion.generate")
+    def test_empty_json_array(self, mock_generate):
+        mock_generate.return_value = "[]"
 
         chunk = Document(page_content="Text", metadata={"chunk_id": "test"})
         triplets = extract_triplets_from_chunk(chunk)
@@ -195,11 +187,9 @@ class TestStoreInGraph:
 class TestStoreInVectorstore:
     @patch("app.pipelines.ingestion.get_qdrant_client")
     @patch("app.pipelines.ingestion.ensure_collection_exists")
-    @patch("app.pipelines.ingestion.get_embeddings")
-    def test_stores_vectors(self, mock_embeddings, mock_ensure, mock_client):
-        mock_emb = MagicMock()
-        mock_emb.embed_documents.return_value = [[0.1] * 1536]
-        mock_embeddings.return_value = mock_emb
+    @patch("app.pipelines.ingestion.embed_documents")
+    def test_stores_vectors(self, mock_embed, mock_ensure, mock_client):
+        mock_embed.return_value = [[0.1] * 768]
 
         mock_qdrant = MagicMock()
         mock_client.return_value = mock_qdrant
@@ -218,8 +208,8 @@ class TestStoreInVectorstore:
 
     @patch("app.pipelines.ingestion.get_qdrant_client")
     @patch("app.pipelines.ingestion.ensure_collection_exists")
-    @patch("app.pipelines.ingestion.get_embeddings")
-    def test_no_triplets_returns_zero(self, mock_embeddings, mock_ensure, mock_client):
+    @patch("app.pipelines.ingestion.embed_documents")
+    def test_no_triplets_returns_zero(self, mock_embed, mock_ensure, mock_client):
         count = store_in_vectorstore([], {}, "test.txt")
         assert count == 0
 
@@ -227,10 +217,11 @@ class TestStoreInVectorstore:
 class TestIngestDocument:
     @patch("app.pipelines.ingestion.store_in_vectorstore", return_value=5)
     @patch("app.pipelines.ingestion.store_in_graph", return_value={"A": "A"})
+    @patch("app.pipelines.ingestion.run_consolidation_pipeline", side_effect=lambda x, **kw: x)
     @patch("app.pipelines.ingestion.extract_triplets")
     @patch("app.pipelines.ingestion.chunk_documents")
     @patch("app.pipelines.ingestion.load_document")
-    def test_full_pipeline(self, mock_load, mock_chunk, mock_extract, mock_graph, mock_vector):
+    def test_full_pipeline(self, mock_load, mock_chunk, mock_extract, mock_consolidate, mock_graph, mock_vector):
         mock_load.return_value = [Document(page_content="text")]
         mock_chunk.return_value = [Document(page_content="text", metadata={"chunk_id": "c1"})]
         mock_extract.return_value = [
@@ -256,3 +247,177 @@ class TestIngestDocument:
         result = ingest_document(Path("empty.txt"))
         assert result["status"] == "no_triplets"
         assert result["triplets_count"] == 0
+
+
+class TestBuildVertexInsert:
+    def test_entity_tag_uses_generic_props(self):
+        stmt = _build_vertex_insert("vid1", "entity", "TestName", "Product")
+        assert "INSERT VERTEX entity" in stmt
+        assert '"TestName"' in stmt
+        assert '"Product"' in stmt
+
+    def test_issue_tag_uses_issue_props(self):
+        stmt = _build_vertex_insert("vid1", "issue", "Bug123", "Issue")
+        assert "INSERT VERTEX issue" in stmt
+        assert "severity" in stmt
+        assert "product" in stmt
+
+    def test_stakeholder_tag(self):
+        stmt = _build_vertex_insert("vid1", "stakeholder", "Alice", "Person")
+        assert "INSERT VERTEX stakeholder" in stmt
+        assert "role" in stmt
+
+    def test_commitment_tag(self):
+        stmt = _build_vertex_insert("vid1", "commitment", "SLA99", "Commitment")
+        assert "INSERT VERTEX commitment" in stmt
+        assert "due_date" in stmt
+
+
+class TestBuildEdgeInsert:
+    def test_related_to_uses_relation_and_weight(self):
+        stmt = _build_edge_insert("src", "dst", "related_to", "has_symptom")
+        assert "INSERT EDGE related_to" in stmt
+        assert "relation" in stmt
+        assert "weight" in stmt
+        assert '"has_symptom"' in stmt
+
+    def test_domain_edge_uses_default_props(self):
+        stmt = _build_edge_insert("src", "dst", "has_symptom", "has_symptom")
+        assert "INSERT EDGE has_symptom" in stmt
+        assert "context" in stmt
+
+    def test_unknown_edge_falls_back_to_related_to(self):
+        stmt = _build_edge_insert("src", "dst", "nonexistent_edge", "test_pred")
+        assert "INSERT EDGE related_to" in stmt
+        assert '"test_pred"' in stmt
+
+    def test_resolved_by_uses_step_order_and_outcome(self):
+        stmt = _build_edge_insert("src", "dst", "resolved_by", "resolved_by")
+        assert "INSERT EDGE resolved_by" in stmt
+        assert "step_order" in stmt
+        assert "outcome" in stmt
+
+
+class TestStoreInGraphDomainRouting:
+    @patch("app.pipelines.ingestion.get_nebula_session")
+    def test_issue_vertex_uses_issue_tag(self, mock_session_ctx):
+        mock_session = MagicMock()
+        mock_session.execute.return_value.is_succeeded.return_value = True
+        mock_session_ctx.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_session_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        triplets_by_chunk = [
+            (
+                Document(page_content="text", metadata={"chunk_id": "c1"}),
+                [
+                    Triplet(
+                        subject="LoginError",
+                        subject_type="Issue",
+                        predicate="has_symptom",
+                        object="Timeout",
+                        object_type="Symptom",
+                    )
+                ],
+            )
+        ]
+
+        store_in_graph(triplets_by_chunk, "test.txt")
+
+        calls = [str(c.args[0]) for c in mock_session.execute.call_args_list]
+        issue_inserts = [c for c in calls if "INSERT VERTEX issue" in c]
+        assert len(issue_inserts) >= 1
+
+    @patch("app.pipelines.ingestion.get_nebula_session")
+    def test_domain_predicate_creates_domain_edge(self, mock_session_ctx):
+        mock_session = MagicMock()
+        mock_session.execute.return_value.is_succeeded.return_value = True
+        mock_session_ctx.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_session_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        triplets_by_chunk = [
+            (
+                Document(page_content="text", metadata={"chunk_id": "c1"}),
+                [
+                    Triplet(
+                        subject="Bug1",
+                        subject_type="Issue",
+                        predicate="has_symptom",
+                        object="Crash",
+                        object_type="Symptom",
+                    )
+                ],
+            )
+        ]
+
+        store_in_graph(triplets_by_chunk, "test.txt")
+
+        calls = [str(c.args[0]) for c in mock_session.execute.call_args_list]
+        edge_inserts = [c for c in calls if "INSERT EDGE has_symptom" in c]
+        assert len(edge_inserts) >= 1
+
+    @patch("app.pipelines.ingestion.get_nebula_session")
+    def test_unknown_predicate_falls_back_to_related_to(self, mock_session_ctx):
+        mock_session = MagicMock()
+        mock_session.execute.return_value.is_succeeded.return_value = True
+        mock_session_ctx.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_session_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        triplets_by_chunk = [
+            (
+                Document(page_content="text", metadata={"chunk_id": "c1"}),
+                [
+                    Triplet(
+                        subject="A",
+                        subject_type="entity",
+                        predicate="custom_relation",
+                        object="B",
+                        object_type="entity",
+                    )
+                ],
+            )
+        ]
+
+        store_in_graph(triplets_by_chunk, "test.txt")
+
+        calls = [str(c.args[0]) for c in mock_session.execute.call_args_list]
+        edge_inserts = [c for c in calls if "INSERT EDGE related_to" in c]
+        assert len(edge_inserts) >= 1
+        for stmt in edge_inserts:
+            assert '"custom_relation"' in stmt
+
+    @patch("app.pipelines.ingestion.get_nebula_session")
+    def test_issue_tag_failure_falls_back_to_entity(self, mock_session_ctx):
+        mock_session = MagicMock()
+
+        def side_effect(stmt):
+            result = MagicMock()
+            if "INSERT VERTEX issue" in stmt:
+                result.is_succeeded.return_value = False
+            else:
+                result.is_succeeded.return_value = True
+            return result
+
+        mock_session.execute.side_effect = side_effect
+        mock_session_ctx.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_session_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        triplets_by_chunk = [
+            (
+                Document(page_content="text", metadata={"chunk_id": "c1"}),
+                [
+                    Triplet(
+                        subject="Bug1",
+                        subject_type="Issue",
+                        predicate="affects",
+                        object="Server",
+                        object_type="Product",
+                    )
+                ],
+            )
+        ]
+
+        store_in_graph(triplets_by_chunk, "test.txt")
+
+        calls = [str(c.args[0]) for c in mock_session.execute.call_args_list]
+        entity_inserts = [c for c in calls if "INSERT VERTEX entity" in c]
+        assert len(entity_inserts) >= 1
