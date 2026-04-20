@@ -1,7 +1,13 @@
-"""Unit tests for RetrievalEngine extended methods."""
+"""Unit tests for RetrievalEngine extended methods and retrieval tools."""
 
 from unittest.mock import MagicMock, patch
 
+from app.agents.tools.retrieval_tools import (
+    escalation_path,
+    get_resolution_history,
+    search_by_product,
+    traverse_issue_graph,
+)
 from app.core.retrieval import RetrievalEngine, SearchResult, reset_retrieval_engine
 
 
@@ -148,3 +154,198 @@ class TestBuildFilter:
         result = engine._build_filter({"source_doc": "test.txt"}, {"system": "support"})
         assert result is not None
         assert len(result.must) == 2
+
+
+class TestSearchByFilter:
+    @patch("app.core.retrieval.get_qdrant_client")
+    @patch("app.core.retrieval.ensure_collection_exists")
+    def test_returns_results_with_score_one(self, mock_ensure, mock_client):
+        reset_retrieval_engine()
+        mock_point = MagicMock()
+        mock_point.payload = {
+            "subject": "Qdrant",
+            "predicate": "is_a",
+            "object": "Database",
+            "subject_id": "Qdrant",
+            "object_id": "Database",
+            "chunk_id": "c1",
+            "source_doc": "test.txt",
+            "subject_type": "",
+            "object_type": "",
+        }
+        mock_qdrant = MagicMock()
+        mock_qdrant.scroll.return_value = ([mock_point], None)
+        mock_client.return_value = mock_qdrant
+
+        engine = RetrievalEngine()
+        results = engine.search_by_filter(
+            filters={"product": "Qdrant"},
+            scope={"system": "support"},
+            active_only=True,
+        )
+        assert len(results) == 1
+        assert results[0].score == 1.0
+        assert results[0].retrieval_method == "filter"
+
+
+class TestSearchByProductTool:
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_returns_formatted_results(self, mock_engine_get):
+        mock_engine = MagicMock()
+        mock_engine.search_by_filter.return_value = [
+            _make_result(subject="Qdrant", predicate="affects", object="v1.17", source_doc="doc1.txt"),
+        ]
+        mock_engine_get.return_value = mock_engine
+
+        result = search_by_product("Qdrant")
+        assert "Qdrant" in result
+        assert "doc1.txt" in result
+
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_no_results(self, mock_engine_get):
+        mock_engine = MagicMock()
+        mock_engine.search_by_filter.return_value = []
+        mock_engine_get.return_value = mock_engine
+
+        result = search_by_product("NonExistent")
+        assert "No results found" in result
+
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_passes_version_filter(self, mock_engine_get):
+        mock_engine = MagicMock()
+        mock_engine.search_by_filter.return_value = []
+        mock_engine_get.return_value = mock_engine
+
+        search_by_product("Qdrant", version="1.17")
+        call_args = mock_engine.search_by_filter.call_args
+        filters = call_args.kwargs["filters"]
+        assert "version" in filters
+
+
+class TestGetResolutionHistoryTool:
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_returns_resolution_chain(self, mock_engine_get):
+        mock_engine = MagicMock()
+        mock_engine.search_dense.return_value = [
+            _make_result(
+                subject="Bug1",
+                predicate="has_symptom",
+                object="Crash",
+                subject_id="Bug1",
+                object_id="Crash",
+                score=0.9,
+            ),
+        ]
+        mock_engine.expand_from_graph.return_value = [
+            SearchResult(
+                subject="Bug1",
+                predicate="resolved_by",
+                object="Patch1",
+                score=1.0,
+                source_doc="",
+                chunk_id="",
+                subject_id="Bug1",
+                object_id="Patch1",
+            ),
+        ]
+        mock_engine_get.return_value = mock_engine
+
+        result = get_resolution_history("Bug1 causes crashes")
+        assert "Bug1" in result
+        assert "resolved_by" in result
+        assert "Patch1" in result
+
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_no_issues_found(self, mock_engine_get):
+        mock_engine = MagicMock()
+        mock_engine.search_dense.return_value = []
+        mock_engine_get.return_value = mock_engine
+
+        result = get_resolution_history("nonexistent issue")
+        assert "No issues found" in result
+
+
+class TestEscalationPathTool:
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_returns_escalation_paths(self, mock_engine_get):
+        mock_engine = MagicMock()
+        mock_engine.search_dense.return_value = [
+            _make_result(
+                subject="Bug1",
+                predicate="escalated_to",
+                object="TeamA",
+                subject_id="Bug1",
+                object_id="TeamA",
+                score=0.85,
+            ),
+        ]
+        mock_engine.expand_from_graph.return_value = [
+            SearchResult(
+                subject="Bug1",
+                predicate="escalated_to",
+                object="SeniorSupport",
+                score=1.0,
+                source_doc="",
+                chunk_id="",
+                subject_id="Bug1",
+                object_id="SeniorSupport",
+            ),
+        ]
+        mock_engine_get.return_value = mock_engine
+
+        result = escalation_path("Bug1 needs escalation")
+        assert "escalated_to" in result
+        assert "SeniorSupport" in result
+
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_no_issues_found(self, mock_engine_get):
+        mock_engine = MagicMock()
+        mock_engine.search_dense.return_value = []
+        mock_engine_get.return_value = mock_engine
+
+        result = escalation_path("nonexistent issue")
+        assert "No issues found" in result
+
+
+class TestTraverseIssueGraphTool:
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_includes_source_label(self, mock_engine_get):
+        mock_engine = MagicMock()
+        mock_engine.expand_from_graph.return_value = [
+            SearchResult(
+                subject="Bug1",
+                predicate="caused_by",
+                object="Misconfig",
+                score=1.0,
+                source_doc="doc1.txt",
+                chunk_id="",
+                subject_id="Bug1",
+                object_id="Misconfig",
+            ),
+        ]
+        mock_engine_get.return_value = mock_engine
+
+        result = traverse_issue_graph("Bug1")
+        assert "Bug1" in result
+        assert "caused_by" in result
+        assert "doc1.txt" in result
+
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_graph_source_when_no_source_doc(self, mock_engine_get):
+        mock_engine = MagicMock()
+        mock_engine.expand_from_graph.return_value = [
+            SearchResult(
+                subject="Bug1",
+                predicate="caused_by",
+                object="Misconfig",
+                score=1.0,
+                source_doc="",
+                chunk_id="",
+                subject_id="Bug1",
+                object_id="Misconfig",
+            ),
+        ]
+        mock_engine_get.return_value = mock_engine
+
+        result = traverse_issue_graph("Bug1")
+        assert "grafo" in result

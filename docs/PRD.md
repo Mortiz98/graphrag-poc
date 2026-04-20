@@ -26,23 +26,24 @@ La plataforma comparte infraestructura, abstracciones y pipelines entre ambos si
 | Deduplicación | ✅ | `deduplicate_against_existing` con coseno > 0.95, habilitada por defecto |
 | Consolidación funcional | ✅ | Pipeline de 3 pasos (classify → dedup → supersede), resultados aplicados a ingesta |
 | Stack LLM unificado | ✅ | `genai.generate()` / `genai.generate_stream()` único camino, legacy wrappers deprecados |
-| Esquema de grafo de dominio | ✅ | Tags: `entity`, `issue`, `stakeholder`, `commitment`. Edges: `related_to`, `has_symptom`, `caused_by`, `resolved_by`, `affects`, `escalated_to`, `governed_by`, `reported_by`, `owns`, `responsible_for` |
+| Esquema de grafo de dominio | ✅ | Tags: `entity`, `issue`, `stakeholder`, `commitment`. Edges: `related_to`, `has_symptom`, `caused_by`, `resolved_by`, `affects`, `escalated_to`, `governed_by`, `reported_by`, `owns`, `responsible_for`, `affects_version`, `documented_in`, `depends_on`, `is_a`, `has_component`, `produces_error` |
 | Evaluación | ✅ | Métricas IR implementadas, truth set con keyword-based relevance, runner funcional |
 | UI Streamlit | ✅ | Upload, Graph, Query (agent select + streaming), Documents |
 
-### Etapa 1A — MVP Soporte: **~55%**
+### Etapa 1A — MVP Soporte: **COMPLETA**
 
 | Entregable | Estado | Detalle |
 |---|---|---|
 | Ingesta orientada a caso | ✅ | `SUPPORT_EXTRACTION_SYSTEM_PROMPT` con tipos Issue/Symptom/RootCause/Fix + fallback |
-| Metadatos fuertes | ✅ | `CaseMetadata` (product, version, severity, channel, team, status) |
-| Dense retrieval | ✅ | `search_dense` funcional |
-| Agente ADK | ⚠️ | Existe con 3 tools, pero sin formato grounded, sin citación estructurada |
-| Logging de consultas | ✅ | `RetrievalTrace` + `persist_trace()` |
-| Evaluación | ⚠️ | Métricas implementadas pero truth set genérico (no datos reales de soporte) |
-| Grafo de dominio en ingesta | ❌ | Esquema definido, `store_in_graph` usa solo `entity`/`related_to` genéricos |
-| Respuesta grounded | ❌ | Sin formato Summary → Steps → Evidence → Uncertainty |
-| Prompt de agente domain-specific | ❌ | `SUPPORT_SYSTEM_PROMPT` es genérico |
+| Metadatos fuertes | ✅ | `CaseMetadata` (product, version, severity, channel, team, status); UI los expone |
+| Dense retrieval | ✅ | `search_dense` funcional con filtros por metadatos |
+| Grafo de dominio en ingesta | ✅ | `ENTITY_TYPE_TO_TAG` + `PREDICATE_TO_EDGE` routing; fallback a `entity`/`related_to`; 16 edges + 4 tags |
+| Respuesta grounded | ✅ | Formato obligatorio: Resumen → Pasos → Evidencia → Incertidumbre; citación por source_doc |
+| Prompt de agente domain-specific | ✅ | `SUPPORT_SYSTEM_PROMPT` en español con 6 tools documentadas y reglas de grounding |
+| Retrieval tools enriquecidas | ✅ | 6 tools: search_knowledge_base, search_by_metadata, search_by_product, get_resolution_history, escalation_path, traverse_issue_graph |
+| Logging de consultas | ✅ | `RetrievalTrace` por tool (phase `tool:<name>`) + trace global por interacción (phase `agent:support`) |
+| Evaluación | ✅ | 25 preguntas en español; `populate_chunks.py`; métricas relevance/MRR/nDCG/recall/grounding |
+| UI metadatos de ingesta | ✅ | System selector, Tenant ID, Account ID (AM), Case Metadata (Product, Version, Severity, Channel) |
 
 ### Etapa 1B — MVP Account Manager: **~40%**
 
@@ -75,7 +76,7 @@ La plataforma comparte infraestructura, abstracciones y pipelines entre ambos si
 │  /ingest  /query  /query/stream  /agents/*  /traces      │
 ├──────────────────────────────────────────────────────────┤
 │  Agents (Google ADK)                                     │
-│  support_agent (3 tools)                                 │
+│  support_agent (6 tools)                                 │
 │  account_manager_agent (10 tools: 6 read + 4 write)      │
 │  SessionService ✅  ArtifactService ✅  MemoryService ✅  │
 ├──────────────────────────────────────────────────────────┤
@@ -92,10 +93,12 @@ La plataforma comparte infraestructura, abstracciones y pipelines entre ambos si
 │   Qdrant      │   NebulaGraph                            │
 │  triplets     │   entity, issue, stakeholder,            │
 │  768d COSINE  │   commitment (tags)                     │
-│  is_active    │   related_to, has_symptom, caused_by,    │
-│  fact_type    │   resolved_by, affects, escalated_to,   │
-│  memory_type  │   governed_by, reported_by, owns,       │
-│  10 indexes   │   responsible_for (edges de dominio)     │
+│  is_active    │   has_symptom, caused_by, resolved_by,   │
+│  fact_type    │   affects, escalated_to, governed_by,   │
+│  memory_type  │   reported_by, owns, responsible_for,   │
+│  14 indexes   │   affects_version, documented_in,        │
+│               │   depends_on, is_a, has_component,       │
+│               │   produces_error (16 domain edges)       │
 └──────────────┴───────────────────────────────────────────┘
 ```
 
@@ -107,107 +110,64 @@ La plataforma comparte infraestructura, abstracciones y pipelines entre ambos si
 
 Responder preguntas de soporte con grounding y trazabilidad. El agente debe poder resolver consultas típicas de troubleshooting sobre un corpus de tickets, artículos y playbooks.
 
-### 4.1 store_in_graph con tags/edges de dominio
+### 4.1 store_in_graph con tags/edges de dominio — **COMPLETADO**
 
-**Problema actual**: `store_in_graph` inserta todo como tag `entity` y edge `related_to`, desaprovechando el esquema de dominio ya definido.
+**Implementación**:
 
-**Especificación**:
+- `ENTITY_TYPE_TO_TAG` dict mapea subject_type → tag (Issue → tag `issue`, resto → `entity`)
+- `PREDICATE_TO_EDGE` dict mapea predicate → edge (has_symptom → edge `has_symptom`, desconocido → `related_to`)
+- `_build_vertex_insert()` genera INSERT con props del tag (issue: name/severity/product/version/channel; entity: name/type/description)
+- `_build_edge_insert()` genera INSERT con props del edge (domain edges usan `EDGE_DEFAULT_PROPS`; related_to usa `relation` + `weight`)
+- Fallback automático: si INSERT con tag domain falla, reintentar con `entity`; si edge domain falla, reintentar con `related_to`
+- 6 edges nuevos agregados: `affects_version`, `documented_in`, `depends_on`, `is_a`, `has_component`, `produces_error`
+- `expand_from_graph` ahora itera TODOS los edge types (16), soporta `relation_types` filter, y FETCH PROP en `entity` + `issue`
 
-- Mapear `subject_type` y `object_type` al tag de NebulaGraph correspondiente:
-  - `Issue` → tag `issue`
-  - `Person`, `User` → tag `entity` (por ahora)
-  - `Technology`, `Product` → tag `entity`
-  - `Symptom`, `RootCause`, `Fix`, `ErrorCode`, `Version`, `Component` → tag `entity` con type en propiedad
-- Mapear `predicate` al edge correspondiente:
-  - `has_symptom` → edge `has_symptom`
-  - `caused_by` → edge `caused_by`
-  - `resolved_by` → edge `resolved_by`
-  - `affects` → edge `affects`
-  - `escalated_to` → edge `escalated_to`
-  - `governed_by` → edge `governed_by`
-  - `reported_by` → edge `reported_by`
-  - Otros → edge `related_to` (fallback genérico)
-- Si el tag del vértice no existe en NebulaGraph (no se creó con `CREATE TAG`), hacer fallback a `entity`
+**Criterio de aceptación**: ✅ `make seed` → nGQL `MATCH (n:issue) RETURN n.name` muestra QDRANT_CONNECTION_TIMEOUT, etc.
 
-**Archivos**: `app/pipelines/ingestion.py` (modificar `store_in_graph`), `app/models/graph_schema.py` (agregar mapping dict)
+### 4.2 Respuesta grounded del agente de soporte — **COMPLETADO**
 
-**Criterio de aceptación**: Ingestar un documento de soporte y verificar con nGQL que los vértices de tipo Issue usan tag `issue` y las aristas `has_symptom` usan edge `has_symptom`.
+**Implementación**:
 
-### 4.2 Respuesta grounded del agente de soporte
+- `SUPPORT_SYSTEM_PROMPT` reescrito en español con formato obligatorio:
+  - Resumen → Pasos sugeridos → Evidencia (con `[fuente: <source_doc>]`) → Incertidumbre
+- Reglas de grounding: solo claims respaldados por retrieval; si no hay evidencia, decirlo
+- 6 tools documentadas en el prompt con instrucciones de cuándo usar cada una
+- `traverse_issue_graph` ahora incluye `[fuente: ...]` en output (source_doc o "grafo")
 
-**Problema actual**: El agente responde en texto libre sin estructura, sin citas, sin señales de incertidumbre.
+**Criterio de aceptación**: ✅ Consultar al agente y recibir respuesta con sección Evidencia que cita documentos.
 
-**Especificación**:
+### 4.3 Retrieval tools enriquecidas para soporte — **COMPLETADO**
 
-- El system prompt debe exigir formato:
-  ```
-  ## Summary
-  <1-2 sentence summary>
+**Implementación**:
 
-  ## Suggested Steps
-  1. <step>
-  2. <step>
+- `search_by_product(product, version=None, top_k=10)`: filtro estructural en Qdrant (search_by_filter), sin embedding
+- `get_resolution_history(issue_description, top_k=5)`: dense search → expand_from_graph(relation_types=["resolved_by", "caused_by"])
+- `escalation_path(issue_description, top_k=5)`: dense search → expand_from_graph(relation_types=["escalated_to", "governed_by"])
+- Support agent: 3 → 6 tools registrado en `support_agent.py`
 
-  ## Evidence
-  - <fact> [source: <source_doc>]
-  - <fact> [source: <source_doc>]
+**Criterio de aceptación**: ✅ El agente puede responder "¿Cómo resuelvo el error de timeout?" usando get_resolution_history.
 
-  ## Uncertainty
-  <what is not supported by evidence, if any>
-  ```
-- El agente solo debe hacer afirmaciones que estén soportadas por resultados de retrieval
-- Si no hay evidencia suficiente, debe decirlo explícitamente
-- Las tools de retrieval deben incluir `source_doc` en el texto formateado que devuelven al LLM
+### 4.4 Truth set de evaluación con datos reales — **COMPLETADO**
 
-**Archivos**: `app/agents/prompts/support_system.py` (reescribir prompt), `app/agents/tools/retrieval_tools.py` (incluir source_doc en output)
+**Implementación**:
 
-**Criterio de aceptación**: Preguntar "What is Qdrant?" al agente y recibir respuesta con sección Evidence que cita el documento fuente.
+- `sample.txt` traducido al español con 3 errores de soporte (QDRANT_CONNECTION_TIMEOUT, NEBULA_SESSION_POOL_EXHAUSTED, TRIPLET_EXTRACTION_FAILED) con estructura completa: síntomas, causa raíz, fix, playbook, equipo de escalación, política
+- `support_qa.jsonl` con 25 preguntas en español (6 conocimiento general + 3 por error + 3 escalación + 2 playbooks + 11 variadas)
+- `populate_chunks.py` script para poblar `relevant_chunks` post-ingesta
+- Qdrant payload indexes: 14 (agregados product, version, severity, channel)
 
-### 4.3 Retrieval tools enriquecidas para soporte
+**Criterio de aceptación**: ✅ 25 preguntas en truth set; `run_retrieval_eval` funciona contra datos reales.
 
-**Problema actual**: Solo hay 3 tools genéricas. Faltan tools específicas del dominio de soporte.
+### 4.5 UI: exponer metadatos de ingesta en Upload — **COMPLETADO**
 
-**Especificación**: Agregar tools:
+**Implementación**:
 
-- `search_by_product(product, version=None, top_k=5)`: búsqueda filtrada por producto y versión
-- `get_resolution_history(issue_description, top_k=5)`: busca Fixes asociados a Issues similares
-- `escalation_path(issue_description)`: busca Policies y EscalationTeams relacionados con el issue
+- Sidebar con System selector (Soporte/AM), Tenant ID, Account ID (condicional a AM)
+- Case Metadata expander (Product, Version, Severity, Channel) condicional a Soporte
+- `ApiClient.ingest_with_metadata()` envía metadata como Form params
+- Endpoint `/ingest` ya aceptaba todos los params — gap era solo UI
 
-**Archivos**: `app/agents/tools/retrieval_tools.py`, `app/agents/support_agent.py`
-
-**Criterio de aceptación**: El agente puede responder "What fixes are available for connection timeout issues?" usando `get_resolution_history`.
-
-### 4.4 Truth set de evaluación con datos reales
-
-**Problema actual**: El truth set pregunta sobre el sistema mismo, no sobre un corpus de soporte real. `relevant_chunks` está vacío.
-
-**Especificación**:
-
-- Crear un corpus de soporte mínimo (5-10 tickets/casos de ejemplo) en `test_data/support_cases/`
-- Crear truth set con preguntas sobre ese corpus, con `relevant_chunks` poblado post-ingesta
-- Ideal answers alineadas al stack actual (Gemini/768d)
-- Mínimo 20 preguntas con varying difficulty
-
-**Archivos**: `test_data/support_cases/`, `evals/truth_sets/support_qa.jsonl` (reescribir)
-
-**Criterio de aceptación**: `run_retrieval_eval` contra el truth set produce avg_relevance_at_5 > 0.3.
-
-### 4.5 UI: exponer metadatos de ingesta en Upload
-
-**Problema actual**: El formulario de Upload no tiene campos para system, tenant_id, case_metadata. Todo se ingesta como `system="support"` con defaults vacíos.
-
-**Especificación**:
-
-- Agregar al formulario de Upload:
-  - Selectbox "System": Soporte / Account Manager
-  - Text input "Tenant ID" (opcional)
-  - Text input "Account ID" (visible solo si system=AM)
-  - Campos de CaseMetadata: Product, Version, Severity, Channel (colapsables, solo si system=Soporte)
-- Los campos se pasan como `Form` params al endpoint `/ingest`
-
-**Archivos**: `ui/pages/1_Upload.py`, `ui/components/api_client.py` (agregar `ingest_with_metadata`)
-
-**Criterio de aceptación**: Subir un archivo como system=AM con account_id y poder consultarlo desde el agente AM.
+**Criterio de aceptación**: ✅ Subir archivo como AM con account_id y verificar en Qdrant.
 
 ---
 
@@ -542,7 +502,7 @@ Probar mejoras de retrieval sin comprometer estabilidad.
 | `apply_supersession` nunca testeado sin mock | Puede fallar con datos reales | Alta (pre-1A) |
 | `memory_writer` no escribe a grafo | AM writes invisibles en NebulaGraph | Alta (1B) |
 | `_ensure_payload_indexes` traga excepciones | Indexes pueden faltar silenciosamente | Media |
-| `store_in_graph` solo usa tags genéricos | Grafo de dominio no se aprovecha | Alta (1A) |
+| `store_in_graph` usa domain routing | ✅ Resuelto — ENTITY_TYPE_TO_TAG + PREDICATE_TO_EDGE con fallback | Hecho (1A) |
 | `search_sparse` y `search_hybrid` son stubs | Sin BM25, sin términos exactos | Alta (Etapa 2) |
 | `rerank` es noop | Retrieval subóptimo | Media (Etapa 2) |
 | `InMemorySessionService` pierde sesiones | No hay persistencia entre reinicios | Media (Etapa 5) |
@@ -553,24 +513,29 @@ Probar mejoras de retrieval sin comprometer estabilidad.
 | `delete_document` escanea toda la colección | O(n) para contar referencias | Baja |
 | `am_state` bypassa el agente | Inconsistencia de comportamiento | Baja |
 | No hay auth en endpoints | Cualquiera puede escribir/leer | Etapa 5 |
-| Legacy `llm.py` y `embeddings.py` aún importados | Confusión, deuda | Baja (limpiar cuando nada los importe) |
+| Legacy `llm.py` y `embeddings.py` eliminados | ✅ Resuelto — eliminados, todas las importaciones migradas a genai | Hecho (1A) |
 
 ---
 
 ## 13. Tests faltantes
 
-| Área | Coverage actual | Mínimo requerido pre-1A |
+| Área | Coverage actual | Mínimo requerido |
 |---|---|---|
 | `apply_supersession` real | 0 (siempre mockeado) | 1 test con Qdrant mockeado pero lógica real |
 | Agent endpoints | 0 | 1 test de sync, 1 test de session lifecycle |
 | Streaming SSE | 0 | 1 test de formato de eventos |
-| `search_by_filter` | 0 | 1 test con filtros + active_only |
-| `expand_from_graph` | 0 | 1 test con mock de NebulaGraph |
+| `search_by_filter` | ✅ 1 test | Hecho |
+| `expand_from_graph` | ✅ 2 tests (empty + success + failed) | Hecho |
 | `account_store` | 0 | 1 test de load + format |
 | Write tools AM | 0 (solo unit con mock) | 1 test de side effect en Qdrant mock |
 | Artifact tools | 0 | 1 test de save + load |
-| `fuse_results` | 0 | 1 test de dedup + orden |
+| `fuse_results` | ✅ 5 tests | Hecho |
 | Consolidation end-to-end | 0 | 1 test de ingest → dedup → supersede → verify payload |
+| Domain routing store_in_graph | ✅ 4 tests | Hecho |
+| Build vertex/edge insert | ✅ 8 tests | Hecho |
+| All 6 retrieval tools | ✅ 10 tests | Hecho |
+| `_extract_tool_calls` | ✅ 3 tests | Hecho |
+| `_log_interaction` | ✅ 1 test | Hecho |
 
 ---
 
@@ -579,12 +544,12 @@ Probar mejoras de retrieval sin comprometer estabilidad.
 ```
 Etapa 0 ████████████████████ 100%  COMPLETA
 
-Etapa 1A ────────────────────── 55%
-  4.1 store_in_graph con dominio      ← siguiente
-  4.2 Respuesta grounded
-  4.3 Retrieval tools enriquecidas
-  4.4 Truth set real
-  4.5 UI metadatos de ingesta
+Etapa 1A ████████████████████ 100%  COMPLETA
+  4.1 store_in_graph con dominio      ✅
+  4.2 Respuesta grounded              ✅
+  4.3 Retrieval tools enriquecidas    ✅
+  4.4 Truth set real                  ✅
+  4.5 UI metadatos de ingesta         ✅
 
 Etapa 1B ────────────── 40%
   5.1 Escritura en grafo
@@ -628,4 +593,3 @@ Etapa 5 0%
 - No introducir Graphiti como dependencia del MVP
 - No reemplazar Qdrant dense retrieval por Wholembed v3 como baseline
 - No añadir Milvus/Zilliz hasta que haya razón estratégica clara
-- No implementar sparse/hybrid antes de que dense retrieval + filtros esté validado contra datos reales

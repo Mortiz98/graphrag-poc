@@ -158,7 +158,7 @@ class TestAgentDefinitions:
         from app.agents.support_agent import support_agent
 
         assert support_agent.name == "support_agent"
-        assert len(support_agent.tools) == 3
+        assert len(support_agent.tools) == 6
 
     def test_account_manager_agent_defined(self):
         from app.agents.account_manager_agent import account_manager_agent
@@ -172,3 +172,151 @@ class TestAdkHealthCheck:
         from app.api.routes.health import _check_adk
 
         assert _check_adk() is True
+
+
+class TestToolTraceLogging:
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_search_knowledge_base_logs_trace(self, mock_get_engine):
+        from app.agents.tools.retrieval_tools import search_knowledge_base
+
+        mock_engine = MagicMock()
+        mock_engine.search_dense.return_value = []
+        mock_get_engine.return_value = mock_engine
+
+        search_knowledge_base("test query")
+        mock_engine.log_trace.assert_called()
+        call_kwargs = mock_engine.log_trace.call_args.kwargs
+        assert call_kwargs["phase"] == "tool:search_knowledge_base"
+        assert call_kwargs["query"] == "test query"
+
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_search_by_product_logs_trace(self, mock_get_engine):
+        from app.agents.tools.retrieval_tools import search_by_product
+
+        mock_engine = MagicMock()
+        mock_engine.search_by_filter.return_value = []
+        mock_get_engine.return_value = mock_engine
+
+        search_by_product("Qdrant")
+        mock_engine.log_trace.assert_called()
+        call_kwargs = mock_engine.log_trace.call_args.kwargs
+        assert call_kwargs["phase"] == "tool:search_by_product"
+        assert call_kwargs["query"] == "Qdrant"
+
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_get_resolution_history_logs_two_traces(self, mock_get_engine):
+        from app.agents.tools.retrieval_tools import get_resolution_history
+
+        mock_engine = MagicMock()
+        mock_result = MagicMock()
+        mock_result.subject = "Bug1"
+        mock_result.predicate = "has_symptom"
+        mock_result.object = "Crash"
+        mock_result.score = 0.9
+        mock_result.source_doc = "doc1.txt"
+        mock_result.subject_id = "Bug1"
+        mock_result.object_id = "Crash"
+        mock_engine.search_dense.return_value = [mock_result]
+        mock_engine.expand_from_graph.return_value = []
+        mock_get_engine.return_value = mock_engine
+
+        get_resolution_history("Bug1 causes crashes")
+        assert mock_engine.log_trace.call_count == 2
+
+    @patch("app.agents.tools.retrieval_tools.get_retrieval_engine")
+    def test_escalation_path_logs_two_traces(self, mock_get_engine):
+        from app.agents.tools.retrieval_tools import escalation_path
+
+        mock_engine = MagicMock()
+        mock_result = MagicMock()
+        mock_result.subject = "Bug1"
+        mock_result.predicate = "escalated_to"
+        mock_result.object = "TeamA"
+        mock_result.score = 0.85
+        mock_result.source_doc = "doc1.txt"
+        mock_result.subject_id = "Bug1"
+        mock_result.object_id = "TeamA"
+        mock_engine.search_dense.return_value = [mock_result]
+        mock_engine.expand_from_graph.return_value = []
+        mock_get_engine.return_value = mock_engine
+
+        escalation_path("Bug1 needs escalation")
+        assert mock_engine.log_trace.call_count == 2
+
+
+class TestExtractToolCalls:
+    def test_extracts_function_calls(self):
+        from app.api.routes.agents import _extract_tool_calls
+
+        mock_part = MagicMock()
+        mock_part.text = None
+        mock_part.function_call = MagicMock()
+        mock_part.function_call.name = "search_knowledge_base"
+        mock_part.function_call.args = {"query": "test"}
+        mock_part.function_response = None
+
+        mock_event = MagicMock()
+        mock_event.content.parts = [mock_part]
+
+        result = _extract_tool_calls([mock_event])
+        assert len(result) == 1
+        assert result[0]["name"] == "search_knowledge_base"
+        assert result[0]["args"]["query"] == "test"
+
+    def test_extracts_function_responses(self):
+        from app.api.routes.agents import _extract_tool_calls
+
+        mock_part = MagicMock()
+        mock_part.text = None
+        mock_part.function_call = None
+        mock_part.function_response = MagicMock()
+        mock_part.function_response.name = "search_knowledge_base"
+
+        mock_event = MagicMock()
+        mock_event.content.parts = [mock_part]
+
+        result = _extract_tool_calls([mock_event])
+        assert len(result) == 1
+        assert result[0]["name"] == "search_knowledge_base"
+        assert result[0]["response"] == "ok"
+
+    def test_skips_text_only_events(self):
+        from app.api.routes.agents import _extract_tool_calls
+
+        mock_part = MagicMock()
+        mock_part.text = "Hello"
+        mock_part.function_call = None
+        mock_part.function_response = None
+
+        mock_event = MagicMock()
+        mock_event.content.parts = [mock_part]
+
+        result = _extract_tool_calls([mock_event])
+        assert len(result) == 0
+
+
+class TestLogInteraction:
+    @patch("app.api.routes.agents.get_retrieval_engine")
+    def test_logs_interaction_trace(self, mock_get_engine):
+        from app.api.routes.agents import _log_interaction
+
+        mock_engine = MagicMock()
+        mock_get_engine.return_value = mock_engine
+
+        _log_interaction(
+            agent_name="support",
+            question="What is Qdrant?",
+            answer="Qdrant is a vector DB",
+            session_id="sess-1",
+            tool_calls=[{"name": "search_knowledge_base", "args": {"query": "Qdrant"}}],
+            duration_ms=1234.5,
+            trace_id="abc123",
+        )
+
+        mock_engine.log_trace.assert_called_once()
+        call_kwargs = mock_engine.log_trace.call_args.kwargs
+        assert call_kwargs["phase"] == "agent:support"
+        assert call_kwargs["query"] == "What is Qdrant?"
+        assert call_kwargs["trace_id"] == "abc123"
+        assert call_kwargs["session_id"] == "sess-1"
+        assert call_kwargs["metadata"]["tool_count"] == 1

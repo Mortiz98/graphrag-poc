@@ -2,7 +2,14 @@ from google.adk.agents import LlmAgent
 
 from app.agents.base import get_adk_model
 from app.agents.prompts.support_system import SUPPORT_SYSTEM_PROMPT
-from app.agents.tools.retrieval_tools import search_by_metadata, search_knowledge_base, traverse_issue_graph
+from app.agents.tools.retrieval_tools import (
+    escalation_path,
+    get_resolution_history,
+    search_by_metadata,
+    search_by_product,
+    search_knowledge_base,
+    traverse_issue_graph,
+)
 
 support_agent = LlmAgent(
     name="support_agent",
@@ -12,6 +19,9 @@ support_agent = LlmAgent(
     tools=[
         search_knowledge_base,
         search_by_metadata,
+        search_by_product,
+        get_resolution_history,
+        escalation_path,
         traverse_issue_graph,
     ],
 )

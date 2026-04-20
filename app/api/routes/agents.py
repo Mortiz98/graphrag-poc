@@ -1,4 +1,5 @@
 import json
+import time
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -12,6 +13,7 @@ from app.agents.account_manager_agent import account_manager_agent
 from app.agents.artifacts import get_artifact_service
 from app.agents.support_agent import support_agent
 from app.core import logger
+from app.core.retrieval import get_retrieval_engine
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
@@ -35,6 +37,55 @@ def _get_runner(agent_name: str) -> Runner:
     return _runners[agent_name]
 
 
+def _extract_tool_calls(events: list) -> list[dict]:
+    tool_calls = []
+    for event in events:
+        if not event.content or not event.content.parts:
+            continue
+        for part in event.content.parts:
+            if part.function_call:
+                tool_calls.append(
+                    {
+                        "name": part.function_call.name,
+                        "args": dict(part.function_call.args) if part.function_call.args else {},
+                    }
+                )
+            elif part.function_response:
+                tool_calls.append(
+                    {
+                        "name": part.function_response.name,
+                        "response": "ok",
+                    }
+                )
+    return tool_calls
+
+
+def _log_interaction(
+    agent_name: str,
+    question: str,
+    answer: str,
+    session_id: str,
+    tool_calls: list[dict],
+    duration_ms: float,
+    trace_id: str,
+) -> None:
+    engine = get_retrieval_engine()
+    engine.log_trace(
+        query=question,
+        phase=f"agent:{agent_name}",
+        candidates=[],
+        metadata={
+            "answer_len": len(answer),
+            "tool_calls": tool_calls,
+            "tool_count": len([tc for tc in tool_calls if "args" in tc]),
+            "session_id": session_id,
+            "duration_ms": round(duration_ms, 1),
+        },
+        trace_id=trace_id,
+        session_id=session_id,
+    )
+
+
 async def _ensure_session(user_id: str, session_id: str | None = None) -> str:
     if session_id is not None:
         try:
@@ -54,20 +105,27 @@ async def _ensure_session(user_id: str, session_id: str | None = None) -> str:
     "to search the knowledge base and provide grounded answers.",
 )
 async def support_query(question: str, user_id: str = "default", session_id: str | None = None):
+    trace_id = str(uuid4())[:8]
+    start = time.monotonic()
     try:
         sid = await _ensure_session(user_id, session_id)
         runner = _get_runner("support")
         content = types.Content(role="user", parts=[types.Part(text=question)])
         events = []
+        all_events = []
         async for event in runner.run_async(user_id=user_id, session_id=sid, new_message=content):
+            all_events.append(event)
             if event.content and event.content.parts:
                 for part in event.content.parts:
                     if part.text:
                         events.append(part.text)
         answer = "\n".join(events) if events else "No response generated."
+        duration_ms = (time.monotonic() - start) * 1000
+        tool_calls = _extract_tool_calls(all_events)
+        _log_interaction("support", question, answer, sid, tool_calls, duration_ms, trace_id)
         return {"answer": answer, "session_id": sid}
     except Exception as e:
-        logger.error("support_agent_error", error=str(e))
+        logger.error("support_agent_error", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=503, detail=f"Agent error: {str(e)}")
 
 
@@ -77,6 +135,8 @@ async def support_query(question: str, user_id: str = "default", session_id: str
     description="Same as /support/query but streams the response token-by-token using SSE.",
 )
 async def support_query_stream(question: str, user_id: str = "default", session_id: str | None = None):
+    trace_id = str(uuid4())[:8]
+    start = time.monotonic()
     try:
         sid = await _ensure_session(user_id, session_id)
         runner = _get_runner("support")
@@ -84,17 +144,25 @@ async def support_query_stream(question: str, user_id: str = "default", session_
 
         async def event_stream():
             yield f"data: {json.dumps({'type': 'metadata', 'session_id': sid})}\n\n"
+            all_events = []
+            text_parts = []
             async for event in runner.run_async(user_id=user_id, session_id=sid, new_message=content):
+                all_events.append(event)
                 if event.content and event.content.parts:
                     for part in event.content.parts:
                         if part.text:
                             token_event = {"type": "token", "content": part.text}
                             yield f"data: {json.dumps(token_event)}\n\n"
+                            text_parts.append(part.text)
+            duration_ms = (time.monotonic() - start) * 1000
+            answer = "\n".join(text_parts) if text_parts else ""
+            tool_calls = _extract_tool_calls(all_events)
+            _log_interaction("support_stream", question, answer, sid, tool_calls, duration_ms, trace_id)
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
-        logger.error("support_agent_stream_error", error=str(e))
+        logger.error("support_agent_stream_error", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=503, detail=f"Agent error: {str(e)}")
 
 
@@ -105,25 +173,32 @@ async def support_query_stream(question: str, user_id: str = "default", session_
     "The agent retrieves account state, commitments, and stakeholder information.",
 )
 async def am_query(question: str, account_id: str, user_id: str = "default", session_id: str | None = None):
+    trace_id = str(uuid4())[:8]
+    start = time.monotonic()
     try:
         sid = await _ensure_session(user_id, session_id)
         runner = _get_runner("am")
         content = types.Content(role="user", parts=[types.Part(text=question)])
         events = []
+        all_events = []
         async for event in runner.run_async(
             user_id=user_id,
             session_id=sid,
             new_message=content,
             state_delta={"account_id": account_id},
         ):
+            all_events.append(event)
             if event.content and event.content.parts:
                 for part in event.content.parts:
                     if part.text:
                         events.append(part.text)
         answer = "\n".join(events) if events else "No response generated."
+        duration_ms = (time.monotonic() - start) * 1000
+        tool_calls = _extract_tool_calls(all_events)
+        _log_interaction("am", question, answer, sid, tool_calls, duration_ms, trace_id)
         return {"answer": answer, "session_id": sid, "account_id": account_id}
     except Exception as e:
-        logger.error("am_agent_error", error=str(e))
+        logger.error("am_agent_error", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=503, detail=f"Agent error: {str(e)}")
 
 
@@ -133,6 +208,8 @@ async def am_query(question: str, account_id: str, user_id: str = "default", ses
     description="Same as /am/query but streams the response token-by-token using SSE.",
 )
 async def am_query_stream(question: str, account_id: str, user_id: str = "default", session_id: str | None = None):
+    trace_id = str(uuid4())[:8]
+    start = time.monotonic()
     try:
         sid = await _ensure_session(user_id, session_id)
         runner = _get_runner("am")
@@ -140,22 +217,30 @@ async def am_query_stream(question: str, account_id: str, user_id: str = "defaul
 
         async def event_stream():
             yield f"data: {json.dumps({'type': 'metadata', 'session_id': sid, 'account_id': account_id})}\n\n"
+            all_events = []
+            text_parts = []
             async for event in runner.run_async(
                 user_id=user_id,
                 session_id=sid,
                 new_message=content,
                 state_delta={"account_id": account_id},
             ):
+                all_events.append(event)
                 if event.content and event.content.parts:
                     for part in event.content.parts:
                         if part.text:
                             token_event = {"type": "token", "content": part.text}
                             yield f"data: {json.dumps(token_event)}\n\n"
+                            text_parts.append(part.text)
+            duration_ms = (time.monotonic() - start) * 1000
+            answer = "\n".join(text_parts) if text_parts else ""
+            tool_calls = _extract_tool_calls(all_events)
+            _log_interaction("am_stream", question, answer, sid, tool_calls, duration_ms, trace_id)
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
-        logger.error("am_agent_stream_error", error=str(e))
+        logger.error("am_agent_stream_error", error=str(e), trace_id=trace_id)
         raise HTTPException(status_code=503, detail=f"Agent error: {str(e)}")
 
 

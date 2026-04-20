@@ -16,7 +16,7 @@ from app.core import logger
 from app.core.genai import embed_query
 from app.core.graph import get_nebula_session
 from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
-from app.models.graph_schema import EDGE_RELATED_TO, SPACE_NAME, TAG_ENTITY, escape_ngql
+from app.models.graph_schema import ALL_EDGE_NAMES, SPACE_NAME, TAG_ENTITY, TAG_ISSUE, escape_ngql
 
 _PAYLOAD_RESERVED_KEYS = frozenset(
     [
@@ -287,13 +287,15 @@ class RetrievalEngine:
         Args:
             entity_ids: List of entity IDs to start traversal from
             hops: Number of hops to traverse (currently only 1 is fully supported)
-            relation_types: Optional list of relation types to filter (not yet implemented)
+            relation_types: Optional list of edge names to filter (e.g. ["has_symptom", "caused_by"])
 
         Returns:
             List of SearchResult objects from graph traversal
         """
         if not entity_ids:
             return []
+
+        edge_names = relation_types if relation_types else ALL_EDGE_NAMES
 
         graph_results = []
         seen_edges = set()
@@ -304,91 +306,95 @@ class RetrievalEngine:
             for entity_id in entity_ids:
                 safe_id = escape_ngql(entity_id)
 
-                # Traverse outgoing and incoming edges
-                for direction in ["out", "in"]:
-                    if direction == "out":
-                        query = (
-                            f'GO FROM "{safe_id}" OVER {EDGE_RELATED_TO} '
-                            f"YIELD {EDGE_RELATED_TO}._src AS src, "
-                            f"{EDGE_RELATED_TO}._dst AS dst, "
-                            f"{EDGE_RELATED_TO}.relation AS relation"
-                        )
-                    else:
-                        query = (
-                            f'GO FROM "{safe_id}" OVER {EDGE_RELATED_TO} REVERSELY '
-                            f"YIELD {EDGE_RELATED_TO}._src AS src, "
-                            f"{EDGE_RELATED_TO}._dst AS dst, "
-                            f"{EDGE_RELATED_TO}.relation AS relation"
-                        )
-
-                    result = session.execute(query)
-                    if not result.is_succeeded():
-                        continue
-
-                    for row in result.rows():
-                        try:
-                            src_id_bytes = row.values[0].get_sVal()
-                            dst_id_bytes = row.values[1].get_sVal()
-                            rel_bytes = row.values[2].get_sVal()
-
-                            src_id = src_id_bytes.decode() if isinstance(src_id_bytes, bytes) else str(src_id_bytes)
-                            dst_id = dst_id_bytes.decode() if isinstance(dst_id_bytes, bytes) else str(dst_id_bytes)
-                            relation = rel_bytes.decode() if isinstance(rel_bytes, bytes) else str(rel_bytes)
-
-                            edge_key = f"{src_id}-{relation}-{dst_id}"
-                            if edge_key in seen_edges:
-                                continue
-                            seen_edges.add(edge_key)
-
-                            # Get entity names from vertex properties
-                            src_name = src_id.replace("_", " ")
-                            dst_name = dst_id.replace("_", " ")
-
-                            graph_results.append(
-                                SearchResult(
-                                    subject=src_name,
-                                    predicate=relation,
-                                    object=dst_name,
-                                    score=1.0,  # Graph edges have uniform weight
-                                    source_doc="",
-                                    chunk_id="",
-                                    subject_id=src_id,
-                                    object_id=dst_id,
-                                    metadata={"from_graph": True},
-                                )
+                for edge_name in edge_names:
+                    for direction in ["out", "in"]:
+                        if direction == "out":
+                            query = (
+                                f'GO FROM "{safe_id}" OVER {edge_name} '
+                                f"YIELD {edge_name}._src AS src, "
+                                f"{edge_name}._dst AS dst, "
+                                f'"{edge_name}" AS edge_name'
                             )
-                        except Exception:
+                        else:
+                            query = (
+                                f'GO FROM "{safe_id}" OVER {edge_name} REVERSELY '
+                                f"YIELD {edge_name}._src AS src, "
+                                f"{edge_name}._dst AS dst, "
+                                f'"{edge_name}" AS edge_name'
+                            )
+
+                        result = session.execute(query)
+                        if not result.is_succeeded():
                             continue
 
-                # Fetch entity names for better display
-                entity_names_query = f'FETCH PROP ON {TAG_ENTITY} "{safe_id}" YIELD vertex AS v'
-                result = session.execute(entity_names_query)
-                if result.is_succeeded():
-                    for row in result.rows():
-                        try:
-                            v = row.values[0]
-                            vertex = v.get_vVal()
-                            vid_bytes = vertex.vid.get_sVal()
-                            vid_str = vid_bytes.decode() if isinstance(vid_bytes, bytes) else str(vid_bytes)
-                            for tag in vertex.tags:
-                                tag_name = tag.name.decode() if isinstance(tag.name, bytes) else tag.name
-                                if tag_name == "entity":
-                                    name = tag.props.get(b"name")
-                                    if name and name.get_sVal():
-                                        name_str = name.get_sVal().decode()
+                        for row in result.rows():
+                            try:
+                                src_id_bytes = row.values[0].get_sVal()
+                                dst_id_bytes = row.values[1].get_sVal()
+                                edge_label_bytes = row.values[2].get_sVal()
+
+                                src_id = src_id_bytes.decode() if isinstance(src_id_bytes, bytes) else str(src_id_bytes)
+                                dst_id = dst_id_bytes.decode() if isinstance(dst_id_bytes, bytes) else str(dst_id_bytes)
+                                edge_label = (
+                                    edge_label_bytes.decode()
+                                    if isinstance(edge_label_bytes, bytes)
+                                    else str(edge_label_bytes)
+                                )
+
+                                edge_key = f"{src_id}-{edge_label}-{dst_id}"
+                                if edge_key in seen_edges:
+                                    continue
+                                seen_edges.add(edge_key)
+
+                                src_name = src_id.replace("_", " ")
+                                dst_name = dst_id.replace("_", " ")
+
+                                graph_results.append(
+                                    SearchResult(
+                                        subject=src_name,
+                                        predicate=edge_label,
+                                        object=dst_name,
+                                        score=1.0,
+                                        source_doc="",
+                                        chunk_id="",
+                                        subject_id=src_id,
+                                        object_id=dst_id,
+                                        metadata={"from_graph": True},
+                                    )
+                                )
+                            except Exception:
+                                continue
+
+                for tag in [TAG_ENTITY, TAG_ISSUE]:
+                    entity_names_query = f'FETCH PROP ON {tag} "{safe_id}" YIELD vertex AS v'
+                    result = session.execute(entity_names_query)
+                    if result.is_succeeded():
+                        for row in result.rows():
+                            try:
+                                v = row.values[0]
+                                vertex = v.get_vVal()
+                                vid_bytes = vertex.vid.get_sVal()
+                                vid_str = vid_bytes.decode() if isinstance(vid_bytes, bytes) else str(vid_bytes)
+                                for t in vertex.tags:
+                                    _ = t.name
+                                    props = t.props
+                                    name_val = props.get(b"name")
+                                    if name_val and name_val.get_sVal():
+                                        name_str = name_val.get_sVal().decode()
                                         for gr in graph_results:
                                             if gr.subject_id == vid_str:
                                                 gr.subject = name_str
                                             if gr.object_id == vid_str:
                                                 gr.object = name_str
-                        except Exception:
-                            continue
+                            except Exception:
+                                continue
 
         logger.info(
             "graph_expansion_completed",
             entities=len(entity_ids),
             triplets=len(graph_results),
             hops=hops,
+            edge_types=len(edge_names),
         )
 
         return graph_results

@@ -15,9 +15,16 @@ from app.core.graph import get_nebula_session
 from app.core.vectorstore import ensure_collection_exists, get_qdrant_client
 from app.models.documents import Document
 from app.models.graph_schema import (
+    EDGE_DEFAULT_PROPS,
     EDGE_RELATED_TO,
+    ENTITY_TYPE_TO_TAG,
+    PREDICATE_TO_EDGE,
     SPACE_NAME,
+    TAG_COMMITMENT,
     TAG_ENTITY,
+    TAG_INSERT_PROPS,
+    TAG_ISSUE,
+    TAG_STAKEHOLDER,
     escape_ngql,
 )
 from app.models.schemas import CaseMetadata, FactMetadata, Triplet
@@ -99,6 +106,35 @@ def _sanitize_vertex_id(name: str) -> str:
     return f"{sanitized[:247]}_{suffix}"
 
 
+def _build_vertex_insert(vid: str, tag: str, name: str, entity_type: str) -> str:
+    props = TAG_INSERT_PROPS.get(tag, TAG_INSERT_PROPS[TAG_ENTITY])
+    if tag == TAG_ISSUE:
+        vals = ',"'.join([name, "", "", "", "", "", ""])
+        return f'INSERT VERTEX {tag} ({",".join(props)}) VALUES "{vid}":("{vals}")'
+    if tag == TAG_STAKEHOLDER:
+        vals = '","'.join([name, "", "", "", ""])
+        return f'INSERT VERTEX {tag} ({",".join(props)}) VALUES "{vid}":("{vals}")'
+    if tag == TAG_COMMITMENT:
+        vals = '","'.join([name, "", "", "", ""])
+        return f'INSERT VERTEX {tag} ({",".join(props)}) VALUES "{vid}":("{vals}")'
+    vals = '","'.join([name, entity_type, ""])
+    return f'INSERT VERTEX {tag} ({",".join(props)}) VALUES "{vid}":("{vals}")'
+
+
+def _build_edge_insert(src_vid: str, dst_vid: str, edge_name: str, predicate: str) -> str:
+    if edge_name == EDGE_RELATED_TO:
+        rel_escaped = escape_ngql(predicate)
+        return f'INSERT EDGE {edge_name} (relation, weight) VALUES "{src_vid}"->"{dst_vid}":("{rel_escaped}",1.0)'
+    prop_names = EDGE_DEFAULT_PROPS.get(edge_name)
+    if not prop_names:
+        return (
+            f"INSERT EDGE {EDGE_RELATED_TO} (relation, weight) VALUES "
+            f'"{src_vid}"->"{dst_vid}":("{escape_ngql(predicate)}",1.0)'
+        )
+    placeholders = ",".join(['""' for _ in prop_names])
+    return f'INSERT EDGE {edge_name} ({",".join(prop_names)}) VALUES "{src_vid}"->"{dst_vid}":({placeholders})'
+
+
 def store_in_graph(
     triplets_by_chunk: list[tuple[Document, list[Triplet]]],
     source_file: str,
@@ -120,20 +156,28 @@ def store_in_graph(
                 obj_name_escaped = escape_ngql(t.object)
                 sub_type_escaped = escape_ngql(t.subject_type)
                 obj_type_escaped = escape_ngql(t.object_type)
-                rel_escaped = escape_ngql(t.predicate)
 
-                session.execute(
-                    f"INSERT VERTEX {TAG_ENTITY} (name, type, description) VALUES "
-                    f'"{sub_vid}":("{sub_name_escaped}","{sub_type_escaped}","")'
-                )
-                session.execute(
-                    f"INSERT VERTEX {TAG_ENTITY} (name, type, description) VALUES "
-                    f'"{obj_vid}":("{obj_name_escaped}","{obj_type_escaped}","")'
-                )
-                session.execute(
-                    f"INSERT EDGE {EDGE_RELATED_TO} (relation, weight) VALUES "
-                    f'"{sub_vid}"->"{obj_vid}":("{rel_escaped}",1.0)'
-                )
+                sub_tag = ENTITY_TYPE_TO_TAG.get(t.subject_type, TAG_ENTITY)
+                obj_tag = ENTITY_TYPE_TO_TAG.get(t.object_type, TAG_ENTITY)
+
+                sub_stmt = _build_vertex_insert(sub_vid, sub_tag, sub_name_escaped, sub_type_escaped)
+                result = session.execute(sub_stmt)
+                if not result.is_succeeded() and sub_tag != TAG_ENTITY:
+                    fallback = _build_vertex_insert(sub_vid, TAG_ENTITY, sub_name_escaped, sub_type_escaped)
+                    session.execute(fallback)
+
+                obj_stmt = _build_vertex_insert(obj_vid, obj_tag, obj_name_escaped, obj_type_escaped)
+                result = session.execute(obj_stmt)
+                if not result.is_succeeded() and obj_tag != TAG_ENTITY:
+                    fallback = _build_vertex_insert(obj_vid, TAG_ENTITY, obj_name_escaped, obj_type_escaped)
+                    session.execute(fallback)
+
+                edge_name = PREDICATE_TO_EDGE.get(t.predicate, EDGE_RELATED_TO)
+                edge_stmt = _build_edge_insert(sub_vid, obj_vid, edge_name, t.predicate)
+                result = session.execute(edge_stmt)
+                if not result.is_succeeded() and edge_name != EDGE_RELATED_TO:
+                    fallback = _build_edge_insert(sub_vid, obj_vid, EDGE_RELATED_TO, t.predicate)
+                    session.execute(fallback)
 
     logger.info("triplets_stored_in_graph", count=len(vertex_id_map))
     return vertex_id_map

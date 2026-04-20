@@ -68,6 +68,10 @@ def _ensure_payload_indexes(client: QdrantClient, collection_name: str) -> None:
         "is_active",
         "fact_type",
         "memory_type",
+        "product",
+        "version",
+        "severity",
+        "channel",
     ]
     for field in index_fields:
         try:

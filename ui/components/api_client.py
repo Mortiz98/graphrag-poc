@@ -101,6 +101,47 @@ class ApiClient:
                 status=data["status"],
             )
 
+    def ingest_with_metadata(
+        self,
+        filename: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
+        system: str = "support",
+        tenant_id: str | None = None,
+        account_id: str | None = None,
+        product: str | None = None,
+        version: str | None = None,
+        severity: str | None = None,
+        channel: str | None = None,
+    ) -> IngestResult:
+        with self._client() as c:
+            data: dict = {"system": system}
+            if tenant_id:
+                data["tenant_id"] = tenant_id
+            if account_id:
+                data["account_id"] = account_id
+            if product:
+                data["product"] = product
+            if version:
+                data["version"] = version
+            if severity:
+                data["severity"] = severity
+            if channel:
+                data["channel"] = channel
+            resp = c.post(
+                "/ingest",
+                data=data,
+                files={"file": (filename, content, content_type)},
+            )
+            resp.raise_for_status()
+            resp_data = resp.json()
+            return IngestResult(
+                filename=resp_data["filename"],
+                chunks_count=resp_data["chunks_count"],
+                triplets_count=resp_data["triplets_count"],
+                status=resp_data["status"],
+            )
+
     def seed(self) -> IngestResult:
         with self._client() as c:
             resp = c.post("/seed")

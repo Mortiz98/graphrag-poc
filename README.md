@@ -6,44 +6,94 @@ Sistema híbrido de memoria para dos sistemas agentivos — Google ADK + Qdrant 
 
 | Sistema | Propósito | Unidad dominante |
 |---------|-----------|-----------------|
-| **A — Soporte Virtual** | Recuperar y sintetizar conocimiento sobre incidentes, síntomas, causas, resoluciones y políticas | Corpus-centric (caso, ticket, documento) |
-| **B — Account Manager** | Sostener continuidad relacional y operativa a lo largo del tiempo, preservando hechos, compromisos y relaciones | Account-centric y temporal (cuenta, stakeholder) |
+| **A — Soporte Virtual** | Recuperar y sintetizar conocimiento sobre incidentes, síntomas, causas, resoluciones y políticas | Corpus-céntrico (caso, ticket, documento) |
+| **B — Account Manager** | Sostener continuidad relacional y operativa a lo largo del tiempo, preservando hechos, compromisos y relaciones | Cuenta-céntrico y temporal (cuenta, stakeholder) |
 
-Ambos comparten la plataforma base pero tienen topologías lógicas distintas.
+Ambos comparten infraestructura (colección Qdrant `triplets`, space NebulaGraph `graphrag`) pero se aíslan lógicamente vía `system` + `account_id` + `tenant_id` en el payload.
 
 ## Arquitectura
 
+Ver [`docs/architecture.md`](docs/architecture.md) para la especificación completa.
+
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Streamlit :8501                                         │
-│  Upload │ Graph │ Query (support/am) │ Documents        │
-├──────────────────────────────────────────────────────────┤
-│  FastAPI :8000                                           │
-│  /ingest  /query  /agents/*  /traces  /artifacts  /graph │
-├──────────────────────────────────────────────────────────┤
-│  Google ADK                                              │
-│  support_agent (3 tools)                                 │
-│  account_manager_agent (10 tools: 6 read + 4 write)     │
-│  Session ✅  Artifact ✅  Memory ✅                      │
-├──────────────────────────────────────────────────────────┤
-│  Pipelines                                               │
-│  ingestion → consolidation → store dual                  │
-│  query → dense → graph → fuse → generate                │
-│  memory_writer → record_fact / supersede_fact            │
-├──────────────────────────────────────────────────────────┤
-│  Core                                                    │
-│  genai (Gemini, single stack) │ RetrievalEngine          │
-│  AccountStore (estado autoritativo)                      │
-│  NebulaGraph pool             │ Qdrant singleton         │
-├──────────────┬───────────────────────────────────────────┤
-│   Qdrant      │   NebulaGraph                            │
-│  triplets     │   entity, issue, stakeholder,            │
-│  768d COSINE  │   commitment (tags)                     │
-│  is_active    │   has_symptom, caused_by, resolved_by,   │
-│  fact_type    │   affects, escalated_to, owns, ...       │
-│  memory_type  │   (edges de dominio)                    │
-│  10 indexes   │                                         │
-└──────────────┴───────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Presentación                                                │
+│  Streamlit :8501          FastAPI :8000                      │
+│  Upload│Graph│Query│Docs  /ingest /query /agents/* /traces   │
+├─────────────────────────────────────────────────────────────┤
+│  Runtime de agentes (Google ADK)                             │
+│  support_agent (6 tools, solo lectura)                       │
+│  account_manager_agent (10 tools: 6 lectura + 4 escritura)  │
+│  InMemorySessionService │ InMemoryArtifactService            │
+├─────────────────────────────────────────────────────────────┤
+│  Pipelines                                                   │
+│  ingestion → consolidation (dedup+supersede) → store dual    │
+│  query → dense → graph → fuse → generate                    │
+│  memory_writer → record_fact / supersede_fact (solo Qdrant) │
+├─────────────────────────────────────────────────────────────┤
+│  Core                                                        │
+│  genai (Gemini singleton) │ RetrievalEngine (+ traces)       │
+│  AccountStore (estado autoritativo)                          │
+│  NebulaGraph pool          │ Qdrant singleton (14 indexes)   │
+├──────────────────┬──────────────────────────────────────────┤
+│  Qdrant          │  NebulaGraph                             │
+│  triplets        │  4 tags: entity, issue, stakeholder,     │
+│  768d COSINE     │    commitment                            │
+│  14 indexes      │  17 edges: has_symptom, caused_by,       │
+│                  │    resolved_by, affects, escalated_to,    │
+│                  │    governed_by, reported_by, owns,        │
+│                  │    responsible_for, affects_version,      │
+│                  │    documented_in, depends_on, is_a,       │
+│                  │    has_component, produces_error,         │
+│                  │    related_to (fallback)                  │
+└──────────────────┴──────────────────────────────────────────┘
+```
+
+### Agentes y tools
+
+**Soporte (6 tools, solo lectura):**
+
+| Tool | Mecanismo | Cuándo |
+|------|-----------|--------|
+| `search_knowledge_base` | `search_dense` + scope | Consulta general |
+| `search_by_metadata` | `search_dense` + filtros | Usuario especifica product/version/severity |
+| `search_by_product` | `search_by_filter` (sin embedding) | Búsqueda por producto |
+| `get_resolution_history` | dense → graph (`resolved_by`, `caused_by`) | "¿Cómo resolver X?" |
+| `escalation_path` | dense → graph (`escalated_to`, `governed_by`) | "¿A quién escalar?" |
+| `traverse_issue_graph` | `expand_from_graph` (todos los edges) | Exploración libre |
+
+**AM (10 tools: 6 lectura + 4 escritura):**
+
+| Tool | Tipo | Mecanismo |
+|------|------|-----------|
+| `search_knowledge_base` | Lectura | `search_dense` con `system=am` |
+| `search_by_metadata` | Lectura | `search_dense` + filtros |
+| `search_episodes` | Lectura | `search_dense` con `account_id` |
+| `get_account_state` | Lectura | `AccountStore.load_account_state()` |
+| `get_commitments` | Lectura | `search_by_filter(fact_type=commitment)` |
+| `get_stakeholder_map` | Lectura | `search_by_filter(fact_type=stakeholder)` |
+| `write_fact` | Escritura | `memory_writer.record_fact()` |
+| `update_fact` | Escritura | `memory_writer.supersede_fact()` |
+| `write_commitment` | Escritura | `record_fact(fact_type=commitment)` |
+| `write_stakeholder` | Escritura | `record_fact(fact_type=stakeholder)` |
+
+### Formato de respuesta grounded (Soporte)
+
+El prompt obliga al agente a responder con:
+
+```
+## Resumen
+<1-2 oraciones>
+
+## Pasos sugeridos
+1. <paso concreto>
+
+## Evidencia
+- <hecho> [fuente: sample.txt]
+- <hecho> [fuente: grafo]
+
+## Incertidumbre
+<lo no respaldado por evidencia, o "Ninguna">
 ```
 
 ## Inicio Rápido
@@ -75,14 +125,14 @@ uv sync
 make run
 ```
 
-Esto levanta Docker (Qdrant + NebulaGraph), inicializa el schema, y arranca la API y Streamlit.
+Levanta Docker (Qdrant + NebulaGraph), inicializa schema, arranca API y Streamlit.
 
 - **Streamlit UI**: http://localhost:8501
 - **Documentación API**: http://localhost:8000/docs
 
 ### 4. Cargar datos
 
-Subí documentos desde la página **Upload** en la UI, o usá el botón "Seed Sample Data", o por CLI:
+Desde la página **Upload** en la UI, con el botón "Seed Sample Data", o por CLI:
 
 ```bash
 make seed
@@ -90,61 +140,62 @@ make seed
 
 ### 5. Consultar
 
-- Desde la UI: página **Query** → elegí agente (Support o Account Manager) → preguntá
-- Desde API: `curl -X POST http://localhost:8000/api/v1/agents/support/query -d "question=What is Python?"`
+- **UI**: página **Query** → elegir agente (Support o AM) → preguntar
+- **API**: `curl -X POST http://localhost:8000/api/v1/agents/support/query -d "question=¿Cómo resuelvo el timeout de Qdrant?"`
 
-## Cómo Funciona
+## Pipeline de Ingesta
 
-### Ingesta
+```
+Documento ──load──▶ Chunks ──extract──▶ Tripletas ──consolidate──▶ Store (dual)
+```
 
 1. **Load** — PDF, TXT o Markdown
-2. **Chunk** — RecursiveCharacterTextSplitter (1000 chars, 200 overlap)
-3. **Extract** — Gemini extrae tripletas tipadas:
-   - Soporte: `Issue → has_symptom → Symptom`, `Issue → caused_by → RootCause`, `RootCause → resolved_by → Fix`
-   - Genérico: `Entity → relation → Entity`
-4. **Consolidate** — clasificar memoria (state/episodic/semantic/procedural) → deduplicar (coseno > 0.95) → aplicar supersession
-5. **Store dual** — NebulaGraph (vértices + aristas) + Qdrant (embeddings 768d con metadata)
+2. **Chunk** — `RecursiveCharacterTextSplitter` (1000 chars, 200 overlap), cada chunk con `chunk_id` + `chunk_index`
+3. **Extract** — Gemini extrae tripletas tipadas con routing de dominio:
+   - Soporte: tipos Issue/Symptom/RootCause/Fix/Policy/Team/ErrorCode
+   - Vértice `Issue` → tag `issue` (severity, product, version), otros → tag `entity`
+   - Aristas de dominio → edge correspondiente, desconocidas → `related_to` fallback
+4. **Consolidate** — clasificar memoria → deduplicar (coseno > 0.95) → aplicar supersesión
+5. **Store dual** — NebulaGraph (vértices + aristas con fallback) + Qdrant (embeddings 768d + payload con metadata)
 
-### Consulta directa
+### Metadata de ingesta
 
-1. Embed pregunta → `search_dense(top_k, active_only=True)` en Qdrant
-2. IDs de entidades → `expand_from_graph()` en NebulaGraph
-3. Fusionar y deduplicar resultados
-4. Gemini genera respuesta con contexto
+| Campo | Origen | Efecto |
+|-------|--------|--------|
+| `system` | UI / API | Namespace: `"support"` o `"am"` |
+| `tenant_id` | UI / API | Scope por tenant |
+| `account_id` | UI / API (solo AM) | Scope por cuenta |
+| `product`, `version`, `severity`, `channel` | UI Case Metadata / API | Filtros estructurales (14 payload indexes) |
 
-### Consulta por agente (ADK)
-
-1. Runner invoca agente con sesión ADK
-2. El agente decide qué tools llamar:
-   - **Support**: `search_knowledge_base`, `search_by_metadata`, `traverse_issue_graph`
-   - **AM**: tools de lectura + `write_fact`, `update_fact`, `write_commitment`, `write_stakeholder`
-3. Las tools delegan a `RetrievalEngine` y `AccountStore`
-4. El agente sintetiza la respuesta
-
-### Supersesión
+## Supersesión
 
 - Cuando un hecho reemplaza otro: el viejo se marca `is_active=False`, `valid_to=now`, `superseded_by=new_id`
 - Por defecto, las consultas excluyen hechos inactivos (`active_only=True`)
+- `memory_writer.supersede_fact()` crea nuevo hecho + actualiza payload del viejo en Qdrant
+
+## Observabilidad
+
+Cada retrieval tool loguea un trace con fase `tool:<nombre>`. Cada interacción de agente loguea un trace global con fase `agent:<nombre>`, incluyendo tools invocadas, duración y session_id. Persistidos como JSONL en `traces/`.
 
 ## Endpoints API
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
 | `GET` | `/api/v1/health` | Health check (Qdrant + NebulaGraph + Gemini + ADK) |
-| `POST` | `/api/v1/ingest` | Subir documento (PDF/TXT/MD) con metadata |
+| `POST` | `/api/v1/ingest` | Subir documento con metadata |
 | `POST` | `/api/v1/seed` | Cargar sample.txt |
-| `POST` | `/api/v1/query` | Consulta directa (pipeline, `active_only=True`) |
+| `POST` | `/api/v1/query` | Consulta directa (pipeline denso+grafo) |
 | `POST` | `/api/v1/query/stream` | Consulta streaming (SSE) |
 | `GET` | `/api/v1/documents` | Listar documentos |
 | `DELETE` | `/api/v1/documents/{filename}` | Eliminar documento |
 | `GET` | `/api/v1/graph/*` | Entidades, aristas, subgrafos, filtros |
-| `GET` | `/api/v1/traces/*` | Retrieval traces |
-| `GET/POST` | `/api/v1/artifacts/*` | System prompts y playbooks |
+| `GET` | `/api/v1/traces/*` | Traces de retrieval |
+| `GET/POST` | `/api/v1/artifacts/*` | Prompts y playbooks |
 | `POST` | `/api/v1/agents/support/query` | Agente de soporte (ADK) |
-| `POST` | `/api/v1/agents/support/query/stream` | Agente de soporte streaming |
-| `POST` | `/api/v1/agents/am/query` | Agente Account Manager (ADK) |
-| `POST` | `/api/v1/agents/am/query/stream` | Agente AM streaming |
-| `GET` | `/api/v1/agents/am/state/{id}` | Estado de cuenta |
+| `POST` | `/api/v1/agents/support/query/stream` | Soporte streaming |
+| `POST` | `/api/v1/agents/am/query` | Agente AM (ADK), requiere `account_id` |
+| `POST` | `/api/v1/agents/am/query/stream` | AM streaming |
+| `GET` | `/api/v1/agents/am/state/{account_id}` | Snapshot de estado de cuenta |
 
 ## Configuración (.env)
 
@@ -165,14 +216,14 @@ make seed
 | Fase | Estado | Descripción |
 |------|--------|-------------|
 | 0 | ✅ Completa | Plataforma base: ADK, retrieval, Qdrant, namespaces, consolidación, evals |
-| 1A | 🔄 ~55% | MVP Soporte: ingesta orientada a caso, respuestas grounded, tools enriquecidas |
-| 1B | 🔄 ~40% | MVP AM: escritura, AccountStore, grafo en ingesta, prompt domain-specific |
+| 1A | ✅ Completa | MVP Soporte: grafo de dominio, respuesta grounded, 6 tools, traces, truth set 25 preguntas, UI metadata |
+| 1B | 🔄 ~40% | MVP AM: escritura, AccountStore, prompt domain-specific, eval runner, artifact tools |
 | 2 | ⏳ | Sparse + hybrid retrieval, reranking, query rewriting |
 | 3A/3B | ⏳ | Grafos de dominio (soporte) y temporal (AM) |
 | 4 | ⏳ | Carriles experimentales: multi-vector, Wholembed, Graphiti POC |
 | 5 | ⏳ | Managed, persistencia, seguridad, escalado |
 
-Ver [`docs/PRD.md`](docs/PRD.md) para el plan completo con especificaciones, métricas y deuda técnica.
+Ver [`docs/PRD.md`](docs/PRD.md) para el plan completo. Ver [`docs/architecture.md`](docs/architecture.md) para la arquitectura detallada.
 
 ## Estructura del Proyecto
 
@@ -193,7 +244,7 @@ graphrag-poc/
 ├── ui/                    # Streamlit pages and components
 ├── test_data/             # Sample data for seeding
 ├── scripts/               # init_nebula, seed
-└── tests/                 # 199 unit tests
+└── tests/                 # 228 unit tests
 ```
 
 ## Tests
@@ -203,12 +254,18 @@ make test
 # o: uv run ruff check app/ tests/ evals/ ui/ && uv run ruff format app/ tests/ evals/ ui/ && uv run pytest tests/ -v
 ```
 
-199 tests, 2 skipped (requieren Docker). Unit tests con mocks, no necesitan Docker.
+228 tests, 2 skipped (requieren Docker). Unit tests con mocks, no necesitan Docker.
 
 ## Evaluación
 
 ```bash
-python -c "from evals.runner import run_retrieval_eval; print(run_retrieval_eval('evals/truth_sets/support_qa.jsonl'))"
+# Poblar relevant_chunks post-ingesta (requiere Docker + datos ingeridos)
+PYTHONPATH=. uv run python evals/populate_chunks.py
+
+# Correr evaluación
+PYTHONPATH=. uv run python -c "from evals.runner import run_retrieval_eval; print(run_retrieval_eval('evals/truth_sets/support_qa.jsonl'))"
 ```
 
 Métricas disponibles: relevance@k, MRR, nDCG, grounding rate, recall@k.
+
+**Resultados actuales (25 preguntas, español, sample.txt):** relevance@5=1.0, MRR=1.0, recall@5=0.73.

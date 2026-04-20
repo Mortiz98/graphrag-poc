@@ -160,7 +160,7 @@ class TestTraverseGraph:
         mock_row.values = [MagicMock(), MagicMock(), MagicMock()]
         mock_row.values[0].get_sVal.return_value = b"Python"
         mock_row.values[1].get_sVal.return_value = b"Language"
-        mock_row.values[2].get_sVal.return_value = b"is_a"
+        mock_row.values[2].get_sVal.return_value = b"related_to"
 
         go_result = MagicMock()
         go_result.is_succeeded.return_value = True
@@ -168,8 +168,14 @@ class TestTraverseGraph:
 
         failed_result = MagicMock()
         failed_result.is_succeeded.return_value = False
+        failed_result.rows.return_value = []
 
-        mock_session.execute.side_effect = [go_result, go_result, failed_result, failed_result]
+        def execute_side_effect(query):
+            if "GO FROM" in query and "OVER related_to" in query and "REVERSELY" not in query:
+                return go_result
+            return failed_result
+
+        mock_session.execute.side_effect = execute_side_effect
 
         results = traverse_graph(["Python"])
         assert len(results) >= 1

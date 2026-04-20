@@ -9,6 +9,42 @@ client = get_api_client()
 st.title("Upload Documents")
 st.markdown("Upload PDF, TXT, or Markdown files to ingest into the knowledge graph.")
 
+with st.sidebar:
+    st.markdown("### Ingest Metadata")
+    system = st.selectbox(
+        "System",
+        ["support", "am"],
+        format_func=lambda x: "Soporte" if x == "support" else "Account Manager",
+    )
+    tenant_id = st.text_input("Tenant ID", placeholder="Optional")
+
+    if system == "am":
+        account_id = st.text_input("Account ID", placeholder="Required for AM")
+    else:
+        account_id = None
+
+    with st.expander("Case Metadata", expanded=False):
+        product = st.text_input("Product", placeholder="e.g. API Platform") if system == "support" else None
+        version = st.text_input("Version", placeholder="e.g. 3.2.1") if system == "support" else None
+        severity = (
+            st.selectbox(
+                "Severity",
+                [None, "low", "medium", "high", "critical"],
+                format_func=lambda x: "—" if x is None else x.title(),
+            )
+            if system == "support"
+            else None
+        )
+        channel = (
+            st.selectbox(
+                "Channel",
+                [None, "email", "chat", "phone", "self-service"],
+                format_func=lambda x: "—" if x is None else x.title(),
+            )
+            if system == "support"
+            else None
+        )
+
 col1, col2 = st.columns([3, 1])
 with col1:
     st.markdown("### Upload Files")
@@ -39,10 +75,17 @@ if uploaded_files:
     for uploaded in uploaded_files:
         with st.spinner(f"Processing {uploaded.name}..."):
             try:
-                result = client.ingest(
+                result = client.ingest_with_metadata(
                     filename=uploaded.name,
                     content=uploaded.getvalue(),
                     content_type=uploaded.type or "application/octet-stream",
+                    system=system,
+                    tenant_id=tenant_id or None,
+                    account_id=account_id or None,
+                    product=product or None,
+                    version=version or None,
+                    severity=severity or None,
+                    channel=channel or None,
                 )
                 st.success(
                     f"**{result.filename}** — {result.chunks_count} chunks, "

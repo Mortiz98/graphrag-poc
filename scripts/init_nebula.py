@@ -66,6 +66,20 @@ def init_schema() -> None:
         logger.info("waiting_for_space_creation")
         time.sleep(5)
 
+        # Verify space is usable before creating schemas
+        space_ready = False
+        for attempt in range(6):
+            result = session.execute("USE graphrag")
+            if result.is_succeeded():
+                space_ready = True
+                break
+            logger.warning("space_not_ready_yet", attempt=attempt + 1)
+            time.sleep(3)
+
+        if not space_ready:
+            logger.error("space_never_became_ready")
+            return
+
         for stmt in SCHEMA_STATEMENTS_AFTER_SPACE:
             result = session.execute(stmt)
             if result.is_succeeded():
