@@ -1,8 +1,8 @@
-# PRD — GraphRAG: Memoria para dos sistemas agentivos
+# PRD — GraphRAG: Memoria para dos sistemas agenciales
 
 ## 1. Propósito
 
-Construir una plataforma de memoria híbrida (Qdrant + NebulaGraph + Google ADK) que sustente dos sistemas agentivos diferenciados:
+Construir una plataforma de memoria híbrida (Qdrant + NebulaGraph + Google ADK) que sustente dos sistemas agenciales diferenciados:
 
 - **Sistema A — Soporte virtual**: base de conocimiento corpus-centric para troubleshooting, incidentes y políticas.
 - **Sistema B — Account Manager**: memoria longitudinal account-centric y temporal para continuidad relacional.
